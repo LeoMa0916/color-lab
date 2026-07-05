@@ -1,0 +1,1025 @@
+import {
+  ArrowCounterClockwise,
+  CaretDown,
+  Check,
+  DownloadSimple,
+  ImageSquare,
+  Minus,
+  Plus,
+  SlidersHorizontal,
+  Sparkle,
+  UploadSimple,
+  X,
+} from "@phosphor-icons/react";
+import LibRaw from "libraw-wasm";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+const MAX_SIDE = 1600;
+const CHANNELS = [
+  { id: "master", label: "总体", color: "#f5f5f7" },
+  { id: "red", label: "红", color: "#ff5d57" },
+  { id: "green", label: "绿", color: "#62d46f" },
+  { id: "blue", label: "蓝", color: "#5b8cff" },
+];
+const PRESETS = {
+  faithful: { label: "忠于参考", strength: 82, contrast: 0, saturation: 0, temperature: 0, grain: 0 },
+  balanced: { label: "自然平衡", strength: 68, contrast: -4, saturation: -2, temperature: -5, grain: 6 },
+  cinema: { label: "电影感", strength: 76, contrast: 12, saturation: -8, temperature: 8, grain: 18 },
+};
+const DEFAULT_CURVES = {
+  master: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+  red: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+  green: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+  blue: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+};
+const RAW_EXTENSIONS = new Set([
+  "3fr", "ari", "arw", "bay", "braw", "cap", "cr2", "cr3", "crw", "dcr",
+  "dcs", "dng", "drf", "eip", "erf", "fff", "gpr", "iiq", "k25", "kdc",
+  "mdc", "mef", "mos", "mrw", "nef", "nrw", "obm", "orf", "pef", "ptx",
+  "pxn", "r3d", "raf", "raw", "rwl", "rw2", "rwz", "sr2", "srf", "srw",
+  "x3f",
+]);
+const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,.dng,.cr2,.cr3,.nef,.nrw,.arw,.srf,.sr2,.raf,.orf,.rw2,.rwl,.pef,.srw,.3fr,.fff,.iiq,.x3f,.raw";
+
+function clamp(value, min = 0, max = 255) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function defaultSettings() {
+  return {
+    preset: "balanced",
+    strength: 68,
+    temperature: -5,
+    contrast: -4,
+    saturation: -2,
+    grain: 6,
+    curves: structuredClone(DEFAULT_CURVES),
+  };
+}
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = url;
+  });
+}
+
+function fileExtension(file) {
+  return file.name.split(".").pop()?.toLowerCase() || "";
+}
+
+function isRawFile(file) {
+  return RAW_EXTENSIONS.has(fileExtension(file));
+}
+
+async function rawToAsset(file) {
+  const raw = new LibRaw();
+  try {
+    await raw.open(new Uint8Array(await file.arrayBuffer()), {
+      useCameraWb: true,
+      useCameraMatrix: 3,
+      outputColor: 1,
+      outputBps: 8,
+      halfSize: true,
+      highlight: 5,
+      userQual: 3,
+    });
+    const [thumbnail, metadata] = await Promise.all([raw.thumbnailData(), raw.metadata(false)]);
+    if (thumbnail?.format === "jpeg" && thumbnail.data?.length) {
+      return {
+        url: URL.createObjectURL(new Blob([thumbnail.data], { type: "image/jpeg" })),
+        raw: true,
+        metadata: {
+          camera: [metadata?.camera_make, metadata?.camera_model].filter(Boolean).join(" "),
+          iso: metadata?.iso_speed,
+          width: metadata?.width,
+          height: metadata?.height,
+          preview: "embedded",
+        },
+      };
+    }
+    const decoded = await raw.imageData();
+    if (!decoded?.data || !decoded.width || !decoded.height) throw new Error("RAW 文件没有可用的图像数据");
+    const rgba = new Uint8ClampedArray(decoded.width * decoded.height * 4);
+    const colors = decoded.colors || 3;
+    for (let source = 0, target = 0; target < rgba.length; source += colors, target += 4) {
+      rgba[target] = decoded.data[source];
+      rgba[target + 1] = decoded.data[source + Math.min(1, colors - 1)];
+      rgba[target + 2] = decoded.data[source + Math.min(2, colors - 1)];
+      rgba[target + 3] = 255;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = decoded.width;
+    canvas.height = decoded.height;
+    canvas.getContext("2d").putImageData(new ImageData(rgba, decoded.width, decoded.height), 0, 0);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.96));
+    if (!blob) throw new Error("RAW 预览生成失败");
+    return {
+      url: URL.createObjectURL(blob),
+      raw: true,
+      metadata: {
+        camera: [metadata?.camera_make, metadata?.camera_model].filter(Boolean).join(" "),
+        iso: metadata?.iso_speed,
+        width: decoded.width,
+        height: decoded.height,
+      },
+    };
+  } finally {
+    raw.dispose();
+  }
+}
+
+async function fileToAsset(file) {
+  if (isRawFile(file)) return rawToAsset(file);
+  if (!file.type.startsWith("image/")) throw new Error("不支持的文件格式");
+  return { url: URL.createObjectURL(file), raw: false, metadata: null };
+}
+
+function drawSized(image, canvas, maxSide = MAX_SIDE) {
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  canvas.width = Math.round(image.naturalWidth * scale);
+  canvas.height = Math.round(image.naturalHeight * scale);
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return context;
+}
+
+function getHistogram(data, bins = 64) {
+  const histogram = {
+    red: Array(bins).fill(0),
+    green: Array(bins).fill(0),
+    blue: Array(bins).fill(0),
+    master: Array(bins).fill(0),
+  };
+  const step = 256 / bins;
+  for (let index = 0; index < data.length; index += 4) {
+    const red = data[index];
+    const green = data[index + 1];
+    const blue = data[index + 2];
+    const light = red * 0.299 + green * 0.587 + blue * 0.114;
+    histogram.red[Math.min(bins - 1, Math.floor(red / step))] += 1;
+    histogram.green[Math.min(bins - 1, Math.floor(green / step))] += 1;
+    histogram.blue[Math.min(bins - 1, Math.floor(blue / step))] += 1;
+    histogram.master[Math.min(bins - 1, Math.floor(light / step))] += 1;
+  }
+  for (const channel of Object.keys(histogram)) {
+    const peak = Math.max(...histogram[channel], 1);
+    histogram[channel] = histogram[channel].map((value) => value / peak);
+  }
+  return histogram;
+}
+
+function getStats(data) {
+  const sums = [0, 0, 0];
+  const squares = [0, 0, 0];
+  let saturation = 0;
+  const count = data.length / 4;
+  for (let index = 0; index < data.length; index += 4) {
+    const rgb = [data[index], data[index + 1], data[index + 2]];
+    for (let channel = 0; channel < 3; channel += 1) {
+      sums[channel] += rgb[channel];
+      squares[channel] += rgb[channel] * rgb[channel];
+    }
+    const high = Math.max(...rgb);
+    const low = Math.min(...rgb);
+    saturation += high === 0 ? 0 : (high - low) / high;
+  }
+  const mean = sums.map((sum) => sum / count);
+  const std = squares.map((sum, channel) =>
+    Math.sqrt(Math.max(1, sum / count - mean[channel] * mean[channel])),
+  );
+  return { mean, std, saturation: saturation / count, histogram: getHistogram(data) };
+}
+
+async function analyzeUrl(url) {
+  const image = await loadImage(url);
+  const canvas = document.createElement("canvas");
+  const context = drawSized(image, canvas, 420);
+  return getStats(context.getImageData(0, 0, canvas.width, canvas.height).data);
+}
+
+function averageStats(items) {
+  const count = items.length;
+  return {
+    mean: [0, 1, 2].map((channel) =>
+      items.reduce((sum, item) => sum + item.mean[channel], 0) / count,
+    ),
+    std: [0, 1, 2].map((channel) =>
+      items.reduce((sum, item) => sum + item.std[channel], 0) / count,
+    ),
+    saturation: items.reduce((sum, item) => sum + item.saturation, 0) / count,
+  };
+}
+
+function curveLut(points) {
+  const sorted = [...points].sort((a, b) => a.x - b.x);
+  const lut = new Uint8Array(256);
+  let segment = 0;
+  for (let x = 0; x < 256; x += 1) {
+    while (segment < sorted.length - 2 && x > sorted[segment + 1].x) segment += 1;
+    const start = sorted[segment];
+    const end = sorted[Math.min(segment + 1, sorted.length - 1)];
+    const ratio = end.x === start.x ? 0 : (x - start.x) / (end.x - start.x);
+    lut[x] = clamp(Math.round(start.y + (end.y - start.y) * clamp(ratio, 0, 1)));
+  }
+  return lut;
+}
+
+function rgbToHex(rgb) {
+  return `#${rgb.map((value) => Math.round(clamp(value)).toString(16).padStart(2, "0")).join("")}`;
+}
+
+function makePalette(stats) {
+  if (!stats) return ["#292b2f", "#53565c", "#888b90", "#b8b9bc", "#e2e2e4"];
+  return [-0.85, -0.35, 0, 0.4, 0.8].map((factor) =>
+    rgbToHex(stats.mean.map((value, channel) => value + stats.std[channel] * factor)),
+  );
+}
+
+function downloadCanvas(canvas, name, onDone) {
+  if (!canvas) return;
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const anchor = document.createElement("a");
+    anchor.download = `diaoseshi-${name.replace(/\.[^.]+$/, "")}.jpg`;
+    anchor.href = URL.createObjectURL(blob);
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(anchor.href), 1500);
+    onDone?.();
+  }, "image/jpeg", 0.94);
+}
+
+function saveBlob(blob, filename) {
+  const anchor = document.createElement("a");
+  anchor.download = filename;
+  anchor.href = URL.createObjectURL(blob);
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(anchor.href), 1800);
+}
+
+function canvasToBmp(canvas) {
+  const { width, height } = canvas;
+  const pixels = canvas.getContext("2d").getImageData(0, 0, width, height).data;
+  const headerSize = 54;
+  const rowSize = width * 4;
+  const buffer = new ArrayBuffer(headerSize + rowSize * height);
+  const view = new DataView(buffer);
+  view.setUint16(0, 0x4d42, true);
+  view.setUint32(2, buffer.byteLength, true);
+  view.setUint32(10, headerSize, true);
+  view.setUint32(14, 40, true);
+  view.setInt32(18, width, true);
+  view.setInt32(22, height, true);
+  view.setUint16(26, 1, true);
+  view.setUint16(28, 32, true);
+  view.setUint32(34, rowSize * height, true);
+  let offset = headerSize;
+  for (let y = height - 1; y >= 0; y -= 1) {
+    for (let x = 0; x < width; x += 1) {
+      const source = (y * width + x) * 4;
+      view.setUint8(offset++, pixels[source + 2]);
+      view.setUint8(offset++, pixels[source + 1]);
+      view.setUint8(offset++, pixels[source]);
+      view.setUint8(offset++, pixels[source + 3]);
+    }
+  }
+  return new Blob([buffer], { type: "image/bmp" });
+}
+
+function xmpPreset(settings, name) {
+  const tonePoints = settings.curves.master
+    .map((point) => `<rdf:li>${Math.round(point.x)}, ${Math.round(point.y)}</rdf:li>`)
+    .join("");
+  return `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+      crs:PresetType="Normal" crs:Name="${name}" crs:ProcessVersion="15.4"
+      crs:Temperature="${settings.temperature}" crs:Contrast2012="${settings.contrast}"
+      crs:Saturation="${settings.saturation}" crs:GrainAmount="${settings.grain}">
+      <crs:ToneCurvePV2012><rdf:Seq>${tonePoints}</rdf:Seq></crs:ToneCurvePV2012>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`;
+}
+
+function cubePreset(settings, name, size = 17) {
+  const master = curveLut(settings.curves.master);
+  const red = curveLut(settings.curves.red);
+  const green = curveLut(settings.curves.green);
+  const blue = curveLut(settings.curves.blue);
+  const lines = [`TITLE "${name}"`, `LUT_3D_SIZE ${size}`, "DOMAIN_MIN 0.0 0.0 0.0", "DOMAIN_MAX 1.0 1.0 1.0"];
+  for (let b = 0; b < size; b += 1) {
+    for (let g = 0; g < size; g += 1) {
+      for (let r = 0; r < size; r += 1) {
+        const input = [r, g, b].map((value) => Math.round((value / (size - 1)) * 255));
+        const luminance = input[0] * 0.299 + input[1] * 0.587 + input[2] * 0.114;
+        const sat = 1 + settings.saturation / 100;
+        const factor = (259 * (settings.contrast + 255)) / (255 * (259 - settings.contrast));
+        const adjusted = input.map((value, channel) => {
+          let result = luminance + (value - luminance) * sat;
+          result = factor * (result - 128) + 128;
+          if (channel === 0) result += settings.temperature * 0.55;
+          if (channel === 2) result -= settings.temperature * 0.55;
+          return clamp(result);
+        });
+        lines.push([
+          red[master[Math.round(adjusted[0])]],
+          green[master[Math.round(adjusted[1])]],
+          blue[master[Math.round(adjusted[2])]],
+        ].map((value) => (value / 255).toFixed(6)).join(" "));
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+function drawArea(context, values, color, width, height, alpha = 0.28) {
+  context.beginPath();
+  context.moveTo(0, height);
+  values.forEach((value, index) => {
+    context.lineTo((index / (values.length - 1)) * width, height - value * height * 0.9);
+  });
+  context.lineTo(width, height);
+  context.closePath();
+  context.globalAlpha = alpha;
+  context.fillStyle = color;
+  context.fill();
+  context.globalAlpha = 0.85;
+  context.strokeStyle = color;
+  context.lineWidth = 1.25;
+  context.stroke();
+  context.globalAlpha = 1;
+}
+
+function HistogramCanvas({ histogram }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || !histogram) return;
+    const ratio = window.devicePixelRatio || 1;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    canvas.width = width * ratio;
+    canvas.height = height * ratio;
+    const context = canvas.getContext("2d");
+    context.scale(ratio, ratio);
+    context.clearRect(0, 0, width, height);
+    drawArea(context, histogram.red, "#ff544f", width, height);
+    drawArea(context, histogram.green, "#4dd563", width, height);
+    drawArea(context, histogram.blue, "#4f7fff", width, height);
+  }, [histogram]);
+  return <canvas ref={ref} className="histogram-canvas" aria-label="当前照片 RGB 直方图" />;
+}
+
+function CurveEditor({ channel, points, histogram, onChange }) {
+  const ref = useRef(null);
+  const dragIndex = useRef(null);
+  const channelColor = CHANNELS.find((item) => item.id === channel)?.color || "#f5f5f7";
+
+  function coordinates(event) {
+    const rect = ref.current.getBoundingClientRect();
+    return {
+      x: clamp(((event.clientX - rect.left) / rect.width) * 255),
+      y: clamp((1 - (event.clientY - rect.top) / rect.height) * 255),
+    };
+  }
+
+  function nearest(point) {
+    let best = -1;
+    let distance = 18;
+    points.forEach((item, index) => {
+      const value = Math.hypot(item.x - point.x, item.y - point.y);
+      if (value < distance) {
+        best = index;
+        distance = value;
+      }
+    });
+    return best;
+  }
+
+  function handlePointerDown(event) {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const point = coordinates(event);
+    const index = nearest(point);
+    if (index >= 0) dragIndex.current = index;
+    else {
+      const next = [...points, point].sort((a, b) => a.x - b.x);
+      dragIndex.current = next.findIndex((item) => item === point);
+      onChange(next);
+    }
+  }
+
+  function handlePointerMove(event) {
+    if (dragIndex.current === null) return;
+    const point = coordinates(event);
+    const next = points.map((item, index) => {
+      if (index !== dragIndex.current) return item;
+      if (index === 0) return { x: 0, y: point.y };
+      if (index === points.length - 1) return { x: 255, y: point.y };
+      return {
+        x: clamp(point.x, points[index - 1].x + 2, points[index + 1].x - 2),
+        y: point.y,
+      };
+    });
+    onChange(next);
+  }
+
+  function handleDoubleClick(event) {
+    const index = nearest(coordinates(event));
+    if (index > 0 && index < points.length - 1) onChange(points.filter((_, item) => item !== index));
+  }
+
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const ratio = window.devicePixelRatio || 1;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    canvas.width = width * ratio;
+    canvas.height = height * ratio;
+    const context = canvas.getContext("2d");
+    context.scale(ratio, ratio);
+    context.clearRect(0, 0, width, height);
+
+    context.strokeStyle = "rgba(255,255,255,.08)";
+    context.lineWidth = 1;
+    for (let i = 1; i < 4; i += 1) {
+      context.beginPath();
+      context.moveTo((width / 4) * i, 0);
+      context.lineTo((width / 4) * i, height);
+      context.stroke();
+      context.beginPath();
+      context.moveTo(0, (height / 4) * i);
+      context.lineTo(width, (height / 4) * i);
+      context.stroke();
+    }
+    if (histogram?.[channel]) drawArea(context, histogram[channel], channelColor, width, height, 0.16);
+
+    context.strokeStyle = "rgba(255,255,255,.2)";
+    context.beginPath();
+    context.moveTo(0, height);
+    context.lineTo(width, 0);
+    context.stroke();
+
+    const sorted = [...points].sort((a, b) => a.x - b.x);
+    context.strokeStyle = channelColor;
+    context.lineWidth = 2;
+    context.beginPath();
+    sorted.forEach((point, index) => {
+      const x = (point.x / 255) * width;
+      const y = height - (point.y / 255) * height;
+      if (index === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    });
+    context.stroke();
+    sorted.forEach((point) => {
+      const x = (point.x / 255) * width;
+      const y = height - (point.y / 255) * height;
+      context.beginPath();
+      context.arc(x, y, 5, 0, Math.PI * 2);
+      context.fillStyle = channelColor;
+      context.fill();
+      context.strokeStyle = "#fff";
+      context.lineWidth = 1;
+      context.stroke();
+    });
+  }, [channel, channelColor, points, histogram]);
+
+  return (
+    <div className="curve-wrap">
+      <canvas
+        ref={ref}
+        className="curve-canvas"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={() => { dragIndex.current = null; }}
+        onPointerCancel={() => { dragIndex.current = null; }}
+        onDoubleClick={handleDoubleClick}
+        aria-label={`${CHANNELS.find((item) => item.id === channel)?.label}曲线编辑器`}
+      />
+      <span className="curve-zone left">暗部</span>
+      <span className="curve-zone center">中间调</span>
+      <span className="curve-zone right">高光</span>
+    </div>
+  );
+}
+
+function GlassButton({ className = "", children, ...props }) {
+  return <button className={`glass-button ${className}`} {...props}>{children}</button>;
+}
+
+function Range({ label, value, min, max, onChange, signed = true }) {
+  return (
+    <label className="range-row">
+      <span>{label}</span>
+      <output>{signed && value > 0 ? "+" : ""}{value}</output>
+      <input type="range" min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+    </label>
+  );
+}
+
+export function App() {
+  const [references, setReferences] = useState([]);
+  const [referenceStats, setReferenceStats] = useState(null);
+  const [targets, setTargets] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [decodeStatus, setDecodeStatus] = useState("");
+  const [split, setSplit] = useState(50);
+  const [dragging, setDragging] = useState(false);
+  const [channel, setChannel] = useState("master");
+  const [displayHistogram, setDisplayHistogram] = useState(null);
+  const [exported, setExported] = useState(false);
+  const [importErrors, setImportErrors] = useState([]);
+  const [savedStyles, setSavedStyles] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("diaoseshi-styles") || "[]"); }
+    catch { return []; }
+  });
+  const [styleDialogOpen, setStyleDialogOpen] = useState(false);
+  const [styleName, setStyleName] = useState("");
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportOptions, setExportOptions] = useState({
+    name: "diaoseshi-export",
+    resolution: "original",
+    format: "jpeg",
+    quality: 92,
+  });
+  const originalCanvas = useRef(null);
+  const styledCanvas = useRef(null);
+  const referenceInput = useRef(null);
+  const targetInput = useRef(null);
+  const active = targets.find((item) => item.id === activeId) || targets[0] || null;
+  const settings = active?.settings || defaultSettings();
+  const palette = useMemo(() => makePalette(referenceStats), [referenceStats]);
+  const isReady = references.length > 0 && referenceStats && active;
+
+  async function decodeFiles(files, limit) {
+    const selected = [...files].slice(0, limit);
+    const decoded = [];
+    const errors = [];
+    for (const file of selected) {
+      try {
+        setDecodeStatus(isRawFile(file) ? `正在解码 RAW · ${file.name}` : `正在读取 · ${file.name}`);
+        const asset = await fileToAsset(file);
+        decoded.push({ file, asset });
+      } catch (error) {
+        errors.push(`${file.name}：${error.message || "无法解码"}`);
+      }
+    }
+    setDecodeStatus("");
+    setImportErrors(errors);
+    return decoded;
+  }
+
+  function updateActiveSettings(patch) {
+    if (!active) return;
+    setTargets((items) =>
+      items.map((item) => item.id === active.id
+        ? { ...item, settings: { ...item.settings, ...patch } }
+        : item),
+    );
+  }
+
+  function persistStyles(next) {
+    setSavedStyles(next);
+    localStorage.setItem("diaoseshi-styles", JSON.stringify(next));
+  }
+
+  function saveReferenceStyle() {
+    if (!referenceStats || !styleName.trim()) return;
+    const next = [
+      ...savedStyles.filter((item) => item.name !== styleName.trim()),
+      {
+        id: crypto.randomUUID(),
+        name: styleName.trim(),
+        stats: referenceStats,
+        palette: makePalette(referenceStats),
+        createdAt: Date.now(),
+      },
+    ];
+    persistStyles(next);
+    setStyleDialogOpen(false);
+    setStyleName("");
+  }
+
+  function applySavedStyle(item) {
+    setReferenceStats(item.stats);
+    setReferences([]);
+  }
+
+  function removeSavedStyle(id) {
+    persistStyles(savedStyles.filter((item) => item.id !== id));
+  }
+
+  async function exportImage() {
+    if (!active || !styledCanvas.current) return;
+    const source = styledCanvas.current;
+    const longEdge = {
+      original: Math.max(source.width, source.height),
+      "4k": 3840,
+      "2k": 2560,
+      "1080p": 1920,
+    }[exportOptions.resolution];
+    const scale = longEdge / Math.max(source.width, source.height);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(source.width * scale));
+    canvas.height = Math.max(1, Math.round(source.height * scale));
+    canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
+    const filename = exportOptions.name.trim() || "diaoseshi-export";
+    if (exportOptions.format === "bmp") {
+      saveBlob(canvasToBmp(canvas), `${filename}.bmp`);
+    } else {
+      const mime = {
+        jpeg: "image/jpeg",
+        png: "image/png",
+        webp: "image/webp",
+      }[exportOptions.format];
+      const blob = await new Promise((resolve) =>
+        canvas.toBlob(resolve, mime, exportOptions.quality / 100),
+      );
+      saveBlob(blob, `${filename}.${exportOptions.format === "jpeg" ? "jpg" : exportOptions.format}`);
+    }
+    setExportDialogOpen(false);
+    setExported(true);
+    window.setTimeout(() => setExported(false), 4000);
+  }
+
+  function exportPreset(type) {
+    if (!active) return;
+    const name = exportOptions.name.trim() || active.name.replace(/\.[^.]+$/, "");
+    const content = type === "xmp"
+      ? xmpPreset(settings, name)
+      : cubePreset(settings, name);
+    saveBlob(
+      new Blob([content], { type: type === "xmp" ? "application/rdf+xml" : "text/plain" }),
+      `${name}.${type}`,
+    );
+  }
+
+  async function addReferences(files) {
+    setAnalyzing(true);
+    try {
+      const decoded = await decodeFiles(files, Math.max(0, 8 - references.length));
+      const next = decoded.map(({ file, asset }) => ({
+        id: `${file.name}-${file.lastModified}-${Math.random()}`,
+        name: file.name,
+        ...asset,
+      }));
+      if (!next.length) return;
+      const all = [...references, ...next].slice(0, 8);
+      setReferences(all);
+      const stats = await Promise.all(all.map((item) => analyzeUrl(item.url)));
+      setReferenceStats(averageStats(stats));
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  async function addTargets(files) {
+    setAnalyzing(true);
+    try {
+      const decoded = await decodeFiles(files, Math.max(0, 20 - targets.length));
+      const next = decoded.map(({ file, asset }) => ({
+        id: `${file.name}-${file.lastModified}-${Math.random()}`,
+        name: file.name,
+        ...asset,
+        settings: defaultSettings(),
+        stats: null,
+      }));
+      if (!next.length) return;
+      const stats = await Promise.all(next.map((item) => analyzeUrl(item.url)));
+      const complete = next.map((item, index) => ({ ...item, stats: stats[index] }));
+      setTargets((items) => [...items, ...complete].slice(0, 20));
+      setActiveId((value) => value || complete[0].id);
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  async function loadDemo() {
+    setAnalyzing(true);
+    const demoReferences = [
+      { id: "demo-ref-coast", name: "海岸金色时刻", url: "/demo/coast-reference.png" },
+      { id: "demo-ref-street", name: "暖调街巷", url: "/demo/street-reference.png" },
+    ];
+    const demoTargetDefs = [
+      ["demo-a", "海岸街道 01", "/demo/coast-target.png"],
+      ["demo-b", "地中海街巷 02", "/demo/street-reference.png"],
+      ["demo-c", "海岸街道 03", "/demo/coast-reference.png"],
+      ["demo-d", "暖调街景 04", "/demo/street-reference.png"],
+      ["demo-e", "海岸街道 05", "/demo/coast-target.png"],
+    ];
+    try {
+      const [refStats, targetStats] = await Promise.all([
+        Promise.all(demoReferences.map((item) => analyzeUrl(item.url))),
+        Promise.all(demoTargetDefs.map((item) => analyzeUrl(item[2]))),
+      ]);
+      const demoTargets = demoTargetDefs.map((item, index) => ({
+        id: item[0],
+        name: item[1],
+        url: item[2],
+        stats: targetStats[index],
+        settings: {
+          ...defaultSettings(),
+          curves: structuredClone(DEFAULT_CURVES),
+        },
+      }));
+      setReferences(demoReferences);
+      setReferenceStats(averageStats(refStats));
+      setTargets(demoTargets);
+      setActiveId(demoTargets[0].id);
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  function removeReference(id) {
+    const removed = references.find((item) => item.id === id);
+    if (removed?.url.startsWith("blob:")) URL.revokeObjectURL(removed.url);
+    const next = references.filter((item) => item.id !== id);
+    setReferences(next);
+    if (!next.length) setReferenceStats(null);
+    else {
+      setAnalyzing(true);
+      Promise.all(next.map((item) => analyzeUrl(item.url)))
+        .then((stats) => setReferenceStats(averageStats(stats)))
+        .finally(() => setAnalyzing(false));
+    }
+  }
+
+  function removeTarget(id) {
+    const removed = targets.find((item) => item.id === id);
+    if (removed?.url.startsWith("blob:")) URL.revokeObjectURL(removed.url);
+    const next = targets.filter((item) => item.id !== id);
+    setTargets(next);
+    if (activeId === id) setActiveId(next[0]?.id || null);
+  }
+
+  function applyPreset(key) {
+    const item = PRESETS[key];
+    updateActiveSettings({ ...item, preset: key });
+  }
+
+  function resetActive() {
+    if (!active) return;
+    setTargets((items) =>
+      items.map((item) => item.id === active.id ? { ...item, settings: defaultSettings() } : item),
+    );
+    setSplit(50);
+    setChannel("master");
+  }
+
+  function updateCurve(points) {
+    updateActiveSettings({
+      curves: { ...settings.curves, [channel]: points },
+      preset: "custom",
+    });
+  }
+
+  useEffect(() => {
+    if (!active?.url || !originalCanvas.current || !styledCanvas.current) return;
+    let cancelled = false;
+    loadImage(active.url).then((image) => {
+      if (cancelled) return;
+      const originalContext = drawSized(image, originalCanvas.current);
+      const styledContext = drawSized(image, styledCanvas.current);
+      const imageData = originalContext.getImageData(0, 0, originalCanvas.current.width, originalCanvas.current.height);
+      const data = imageData.data;
+      const source = active.stats || getStats(data);
+      const reference = referenceStats || source;
+      const blend = settings.strength / 100;
+      const contrastFactor = (259 * (settings.contrast + 255)) / (255 * (259 - settings.contrast));
+      const satFactor = 1 + settings.saturation / 100;
+      const masterLut = curveLut(settings.curves.master);
+      const colorLuts = [curveLut(settings.curves.red), curveLut(settings.curves.green), curveLut(settings.curves.blue)];
+
+      for (let index = 0; index < data.length; index += 4) {
+        const sourceRgb = [data[index], data[index + 1], data[index + 2]];
+        const mapped = sourceRgb.map((value, color) => {
+          const transferred = ((value - source.mean[color]) / Math.max(8, source.std[color])) * reference.std[color] + reference.mean[color];
+          return value + (transferred - value) * blend;
+        });
+        mapped[0] += settings.temperature * 0.55;
+        mapped[2] -= settings.temperature * 0.55;
+        const luminance = mapped[0] * 0.299 + mapped[1] * 0.587 + mapped[2] * 0.114;
+        let hash = (index / 4) ^ 0x9e3779b9;
+        hash = Math.imul(hash ^ (hash >>> 16), 0x21f0aaad);
+        hash = Math.imul(hash ^ (hash >>> 15), 0x735a2d97);
+        hash ^= hash >>> 15;
+        const midtoneWeight = 0.35 + 0.65 * (1 - Math.abs(luminance - 128) / 128);
+        const noise = (((hash >>> 0) / 4294967295) - 0.5) * settings.grain * 2 * midtoneWeight;
+        for (let color = 0; color < 3; color += 1) {
+          const saturated = luminance + (mapped[color] - luminance) * satFactor;
+          const adjusted = clamp(contrastFactor * (saturated - 128) + 128 + noise);
+          data[index + color] = colorLuts[color][masterLut[Math.round(adjusted)]];
+        }
+      }
+      if (cancelled) return;
+      styledContext.putImageData(imageData, 0, 0);
+      setDisplayHistogram(getHistogram(data));
+    });
+    return () => { cancelled = true; };
+  }, [active, referenceStats, settings]);
+
+  function updateSplit(event) {
+    if (!dragging && event.type === "pointermove") return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    setSplit(clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100));
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span></div>
+        <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
+        <div className="header-actions">
+          <GlassButton className="demo-button" onClick={loadDemo}><Sparkle size={15} />加载示例</GlassButton>
+          <GlassButton className="icon-button" onClick={resetActive} title="重置当前照片"><ArrowCounterClockwise size={18} /></GlassButton>
+          <button
+            className="primary-button"
+            disabled={!active}
+            onClick={() => {
+              setExportOptions((value) => ({
+                ...value,
+                name: active.name.replace(/\.[^.]+$/, ""),
+              }));
+              setExportDialogOpen(true);
+            }}
+          ><DownloadSimple size={17} weight="bold" />导出</button>
+        </div>
+      </header>
+      {exported && <div className="toast glass-surface" role="status"><Check size={16} weight="bold" />已导出当前照片</div>}
+
+      <section className="workspace">
+        <aside className="left-panel glass-panel">
+          <div className="panel-heading"><span>参考风格</span><GlassButton className="mini-button" onClick={() => referenceInput.current?.click()}><Plus size={15} /></GlassButton></div>
+          <input ref={referenceInput} hidden multiple type="file" accept={IMAGE_ACCEPT} onChange={(event) => addReferences(event.target.files)} />
+          <div className="reference-list">
+            {references.map((item) => (
+              <figure key={item.id} className="reference-thumb">
+                <img src={item.url} alt={item.name} />
+                <button title="移除参考图" onClick={() => removeReference(item.id)}><X size={12} weight="bold" /></button>
+              </figure>
+            ))}
+          </div>
+          {!references.length && (
+            <button className="upload-zone" onClick={() => referenceInput.current?.click()}>
+              <UploadSimple size={23} /><span>上传参考图</span><small>建议 3–8 张</small>
+            </button>
+          )}
+          <div className="reference-status">
+            <span className={referenceStats ? "status-dot ready" : "status-dot"} />
+            {analyzing ? (decodeStatus || "正在分析…") : referenceStats ? "参考风格已就绪" : "等待参考图"}
+          </div>
+          <div className="saved-style-block">
+            <div className="saved-style-heading"><span>我的滤镜</span><GlassButton className="save-style-button" disabled={!referenceStats} onClick={() => setStyleDialogOpen(true)}><Plus size={13} />保存</GlassButton></div>
+            <div className="saved-style-list">
+              {savedStyles.map((item) => (
+                <div key={item.id} className="saved-style-row">
+                  <button onClick={() => applySavedStyle(item)}>
+                    <span className="saved-swatch" style={{ background: item.palette?.[2] || "#777" }} />
+                    <span>{item.name}</span>
+                  </button>
+                  <button title="删除滤镜" onClick={() => removeSavedStyle(item.id)}><X size={11} /></button>
+                </div>
+              ))}
+              {!savedStyles.length && <p>保存后可在下次直接调用</p>}
+            </div>
+          </div>
+        </aside>
+
+        <section className="canvas-column">
+          <div
+            className={`photo-stage ${active ? "has-photo" : ""}`}
+            onPointerDown={(event) => { setDragging(true); updateSplit(event); }}
+            onPointerMove={updateSplit}
+            onPointerUp={() => setDragging(false)}
+            onPointerLeave={() => setDragging(false)}
+          >
+            {active ? (
+              <>
+                <canvas ref={originalCanvas} className="photo-canvas original" />
+                <div className="styled-clip" style={{ width: `${split}%` }}><canvas ref={styledCanvas} className="photo-canvas styled" /></div>
+                <div className="split-line" style={{ left: `${split}%` }}><span>‹›</span></div>
+                <span className="image-label styled-label">调色后</span>
+                <span className="image-label original-label">原图</span>
+              </>
+            ) : (
+              <button className="empty-canvas" onClick={() => targetInput.current?.click()}>
+                <span className="empty-icon"><ImageSquare size={31} /></span>
+                <strong>上传需要调色的照片</strong>
+                <span>支持一次选择多张，每张保留独立参数</span>
+                <b><UploadSimple size={16} />选择照片</b>
+              </button>
+            )}
+          </div>
+
+          <div className="control-dock glass-surface">
+            <div className="strength-control"><span>风格强度</span><strong>{settings.strength}%</strong></div>
+            <input type="range" min="0" max="100" value={settings.strength} disabled={!active} onChange={(event) => updateActiveSettings({ strength: Number(event.target.value), preset: "custom" })} />
+            <div className="preset-group">
+              {Object.entries(PRESETS).map(([key, item]) => (
+                <GlassButton key={key} className={settings.preset === key ? "selected" : ""} disabled={!active} onClick={() => applyPreset(key)}>{item.label}</GlassButton>
+              ))}
+            </div>
+          </div>
+
+          <section className="target-strip glass-surface">
+            <div className="target-strip-title"><span>待调色照片</span><b>{targets.length}</b></div>
+            <div className="target-scroller">
+              <button className="add-target" onClick={() => targetInput.current?.click()}><Plus size={24} /><span>添加照片</span></button>
+              <input ref={targetInput} hidden multiple type="file" accept={IMAGE_ACCEPT} onChange={(event) => addTargets(event.target.files)} />
+              {targets.map((item) => (
+                <figure
+                  key={item.id}
+                  className={`target-thumb ${item.id === active?.id ? "active" : ""}`}
+                  onClick={() => setActiveId(item.id)}
+                >
+                  <img src={item.url} alt={item.name} />
+                  {item.raw && <span className="raw-badge">RAW</span>}
+                  {item.id === active?.id && <figcaption>正在编辑</figcaption>}
+                  <button title="移除照片" onClick={(event) => { event.stopPropagation(); removeTarget(item.id); }}><X size={12} weight="bold" /></button>
+                </figure>
+              ))}
+            </div>
+          </section>
+        </section>
+
+        <aside className="right-panel glass-panel">
+          <section className="inspector-section histogram-section">
+            <div className="section-title"><h2>直方图</h2><CaretDown size={15} /></div>
+            <HistogramCanvas histogram={displayHistogram || active?.stats?.histogram} />
+          </section>
+          <section className="inspector-section curve-section">
+            <div className="section-title"><h2>曲线</h2><GlassButton className="reset-curve" onClick={() => updateCurve(structuredClone(DEFAULT_CURVES[channel]))}><ArrowCounterClockwise size={13} />重置</GlassButton></div>
+            <div className="channel-tabs glass-surface">
+              {CHANNELS.map((item) => (
+                <button
+                  key={item.id}
+                  className={channel === item.id ? `active ${item.id}` : ""}
+                  onClick={() => setChannel(item.id)}
+                >{item.label}</button>
+              ))}
+            </div>
+            <CurveEditor channel={channel} points={settings.curves[channel]} histogram={displayHistogram || active?.stats?.histogram} onChange={updateCurve} />
+            <p className="curve-help">点击添加控制点 · 双击删除</p>
+          </section>
+          <section className="inspector-section adjustments">
+            <Range label="色温" value={settings.temperature} min={-40} max={40} onChange={(temperature) => updateActiveSettings({ temperature, preset: "custom" })} />
+            <Range label="对比度" value={settings.contrast} min={-40} max={40} onChange={(contrast) => updateActiveSettings({ contrast, preset: "custom" })} />
+            <Range label="饱和度" value={settings.saturation} min={-40} max={40} onChange={(saturation) => updateActiveSettings({ saturation, preset: "custom" })} />
+            <Range label="胶片颗粒" value={settings.grain} min={0} max={40} signed={false} onChange={(grain) => updateActiveSettings({ grain, preset: "custom" })} />
+          </section>
+          <section className="palette-section">
+            <div>{palette.map((color) => <span key={color} style={{ background: color }} />)}</div>
+            <p>{referenceStats ? `参考色彩 · ${referenceStats.saturation < 0.35 ? "克制饱和" : "鲜明色彩"}` : "上传参考图生成色板"}</p>
+          </section>
+        </aside>
+      </section>
+      {!!importErrors.length && (
+        <div className="import-errors glass-surface" role="alert">
+          <strong>部分文件未导入</strong>
+          {importErrors.map((item) => <span key={item}>{item}</span>)}
+          <button onClick={() => setImportErrors([])}><X size={13} /></button>
+        </div>
+      )}
+      {styleDialogOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setStyleDialogOpen(false)}>
+          <section className="modal glass-panel" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-title"><div><Sparkle size={18} /><h2>保存参考风格</h2></div><GlassButton className="mini-button" onClick={() => setStyleDialogOpen(false)}><X size={14} /></GlassButton></div>
+            <p>色彩均值、对比范围和饱和倾向会保存在这台设备的浏览器中。</p>
+            <label className="field-label">滤镜名称<input autoFocus value={styleName} placeholder="例如：加州暖阳" onChange={(event) => setStyleName(event.target.value)} /></label>
+            <div className="dialog-actions"><GlassButton onClick={() => setStyleDialogOpen(false)}>取消</GlassButton><button className="primary-button" disabled={!styleName.trim()} onClick={saveReferenceStyle}>保存滤镜</button></div>
+          </section>
+        </div>
+      )}
+      {exportDialogOpen && active && (
+        <div className="modal-backdrop" onMouseDown={() => setExportDialogOpen(false)}>
+          <section className="modal export-modal glass-panel" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-title"><div><DownloadSimple size={18} /><h2>导出</h2></div><GlassButton className="mini-button" onClick={() => setExportDialogOpen(false)}><X size={14} /></GlassButton></div>
+            <div className="export-grid">
+              <label className="field-label full">文件名称<input value={exportOptions.name} onChange={(event) => setExportOptions({ ...exportOptions, name: event.target.value })} /></label>
+              <label className="field-label">像素大小<select value={exportOptions.resolution} onChange={(event) => setExportOptions({ ...exportOptions, resolution: event.target.value })}><option value="original">原始预览尺寸</option><option value="4k">4K · 最长边 3840</option><option value="2k">2K · 最长边 2560</option><option value="1080p">1080p · 最长边 1920</option></select></label>
+              <label className="field-label">图片格式<select value={exportOptions.format} onChange={(event) => setExportOptions({ ...exportOptions, format: event.target.value })}><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option><option value="bmp">BMP</option></select></label>
+              <label className="field-label full">质量 <span>{exportOptions.quality}%</span><input type="range" min="50" max="100" value={exportOptions.quality} disabled={!["jpeg", "webp"].includes(exportOptions.format)} onChange={(event) => setExportOptions({ ...exportOptions, quality: Number(event.target.value) })} /></label>
+            </div>
+            <div className="preset-export">
+              <div><strong>导出调色预设</strong><p>BMP 是图片格式；XMP 用于 Lightroom/Camera Raw，CUBE LUT 可用于 Photoshop 等软件。</p></div>
+              <div><GlassButton onClick={() => exportPreset("xmp")}>导出 XMP</GlassButton><GlassButton onClick={() => exportPreset("cube")}>导出 CUBE</GlassButton></div>
+            </div>
+            <div className="dialog-actions"><GlassButton onClick={() => setExportDialogOpen(false)}>取消</GlassButton><button className="primary-button" onClick={exportImage}>导出图片</button></div>
+          </section>
+        </div>
+      )}
+    </main>
+  );
+}

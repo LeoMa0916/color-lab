@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.npm-cache/
+.npmrc
+
+# Local Codex/project instructions and QA captures
+AGENTS.md
+implementation.png
+qa-comparison.png
+qa-focus.png
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
