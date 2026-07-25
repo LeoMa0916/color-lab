@@ -21,6 +21,7 @@ import {
   getHistogram,
   makePalette,
 } from "./colorEngine";
+import { applyCurveLuts, smoothCurveLut as curveLut } from "./curveMath";
 
 const MAX_SIDE = 1600;
 const CHANNELS = [
@@ -40,6 +41,7 @@ const DEFAULT_CURVES = {
   green: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
   blue: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
 };
+const IDENTITY_LUT = Uint8Array.from({ length: 256 }, (_, value) => value);
 const RAW_EXTENSIONS = new Set([
   "3fr", "ari", "arw", "bay", "braw", "cap", "cr2", "cr3", "crw", "dcr",
   "dcs", "dng", "drf", "eip", "erf", "fff", "gpr", "iiq", "k25", "kdc",
@@ -160,20 +162,6 @@ async function analyzeUrl(url) {
   const canvas = document.createElement("canvas");
   const context = drawSized(image, canvas, 640);
   return analyzePixels(context.getImageData(0, 0, canvas.width, canvas.height).data);
-}
-
-function curveLut(points) {
-  const sorted = [...points].sort((a, b) => a.x - b.x);
-  const lut = new Uint8Array(256);
-  let segment = 0;
-  for (let x = 0; x < 256; x += 1) {
-    while (segment < sorted.length - 2 && x > sorted[segment + 1].x) segment += 1;
-    const start = sorted[segment];
-    const end = sorted[Math.min(segment + 1, sorted.length - 1)];
-    const ratio = end.x === start.x ? 0 : (x - start.x) / (end.x - start.x);
-    lut[x] = clamp(Math.round(start.y + (end.y - start.y) * clamp(ratio, 0, 1)));
-  }
-  return lut;
 }
 
 function downloadCanvas(canvas, name, onDone) {
@@ -317,10 +305,25 @@ function HistogramCanvas({ histogram }) {
   return <canvas ref={ref} className="histogram-canvas" aria-label="当前照片 RGB 直方图" />;
 }
 
-function CurveEditor({ channel, points, histogram, onChange }) {
+function CurveEditor({ channel, points, histogram, onChange, onInteractionChange }) {
   const ref = useRef(null);
   const dragIndex = useRef(null);
+  const livePointsRef = useRef(points);
+  const pendingPoints = useRef(null);
+  const changeFrame = useRef(null);
+  const [livePoints, setLivePoints] = useState(points);
+  const [readout, setReadout] = useState(null);
   const channelColor = CHANNELS.find((item) => item.id === channel)?.color || "#f5f5f7";
+
+  useEffect(() => {
+    if (dragIndex.current !== null) return;
+    livePointsRef.current = points;
+    setLivePoints(points);
+  }, [channel, points]);
+
+  useEffect(() => () => {
+    if (changeFrame.current !== null) cancelAnimationFrame(changeFrame.current);
+  }, []);
 
   function coordinates(event) {
     const rect = ref.current.getBoundingClientRect();
@@ -333,7 +336,7 @@ function CurveEditor({ channel, points, histogram, onChange }) {
   function nearest(point) {
     let best = -1;
     let distance = 18;
-    points.forEach((item, index) => {
+    livePointsRef.current.forEach((item, index) => {
       const value = Math.hypot(item.x - point.x, item.y - point.y);
       if (value < distance) {
         best = index;
@@ -343,36 +346,81 @@ function CurveEditor({ channel, points, histogram, onChange }) {
     return best;
   }
 
+  function queueChange(next) {
+    livePointsRef.current = next;
+    pendingPoints.current = next;
+    setLivePoints(next);
+    if (changeFrame.current !== null) return;
+    changeFrame.current = requestAnimationFrame(() => {
+      changeFrame.current = null;
+      if (!pendingPoints.current) return;
+      const value = pendingPoints.current;
+      pendingPoints.current = null;
+      onChange(value);
+    });
+  }
+
+  function flushChange() {
+    if (!pendingPoints.current) return;
+    if (changeFrame.current !== null) cancelAnimationFrame(changeFrame.current);
+    changeFrame.current = null;
+    const value = pendingPoints.current;
+    pendingPoints.current = null;
+    onChange(value);
+  }
+
   function handlePointerDown(event) {
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = coordinates(event);
     const index = nearest(point);
-    if (index >= 0) dragIndex.current = index;
+    onInteractionChange?.(true);
+    if (index >= 0) {
+      dragIndex.current = index;
+      setReadout(livePointsRef.current[index]);
+    }
     else {
-      const next = [...points, point].sort((a, b) => a.x - b.x);
+      const next = [...livePointsRef.current, point].sort((a, b) => a.x - b.x);
       dragIndex.current = next.findIndex((item) => item === point);
-      onChange(next);
+      setReadout(point);
+      queueChange(next);
     }
   }
 
   function handlePointerMove(event) {
     if (dragIndex.current === null) return;
     const point = coordinates(event);
-    const next = points.map((item, index) => {
+    const current = livePointsRef.current;
+    const next = current.map((item, index) => {
       if (index !== dragIndex.current) return item;
       if (index === 0) return { x: 0, y: point.y };
-      if (index === points.length - 1) return { x: 255, y: point.y };
+      if (index === current.length - 1) return { x: 255, y: point.y };
       return {
-        x: clamp(point.x, points[index - 1].x + 2, points[index + 1].x - 2),
+        x: clamp(point.x, current[index - 1].x + 2, current[index + 1].x - 2),
         y: point.y,
       };
     });
-    onChange(next);
+    setReadout(next[dragIndex.current]);
+    queueChange(next);
+  }
+
+  function finishInteraction(event) {
+    flushChange();
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragIndex.current = null;
+    onInteractionChange?.(false);
   }
 
   function handleDoubleClick(event) {
     const index = nearest(coordinates(event));
-    if (index > 0 && index < points.length - 1) onChange(points.filter((_, item) => item !== index));
+    const current = livePointsRef.current;
+    if (index > 0 && index < current.length - 1) {
+      const next = current.filter((_, item) => item !== index);
+      setReadout(null);
+      queueChange(next);
+    }
   }
 
   useEffect(() => {
@@ -407,17 +455,20 @@ function CurveEditor({ channel, points, histogram, onChange }) {
     context.lineTo(width, 0);
     context.stroke();
 
-    const sorted = [...points].sort((a, b) => a.x - b.x);
+    const lut = curveLut(livePoints);
     context.strokeStyle = channelColor;
     context.lineWidth = 2;
+    context.lineJoin = "round";
+    context.lineCap = "round";
     context.beginPath();
-    sorted.forEach((point, index) => {
-      const x = (point.x / 255) * width;
-      const y = height - (point.y / 255) * height;
-      if (index === 0) context.moveTo(x, y);
+    lut.forEach((output, input) => {
+      const x = (input / 255) * width;
+      const y = height - (output / 255) * height;
+      if (input === 0) context.moveTo(x, y);
       else context.lineTo(x, y);
     });
     context.stroke();
+    const sorted = [...livePoints].sort((a, b) => a.x - b.x);
     sorted.forEach((point) => {
       const x = (point.x / 255) * width;
       const y = height - (point.y / 255) * height;
@@ -429,17 +480,22 @@ function CurveEditor({ channel, points, histogram, onChange }) {
       context.lineWidth = 1;
       context.stroke();
     });
-  }, [channel, channelColor, points, histogram]);
+  }, [channel, channelColor, livePoints, histogram]);
 
   return (
     <div className="curve-wrap">
+      <output className={readout ? "curve-readout active" : "curve-readout"}>
+        {readout
+          ? `输入 ${Math.round(readout.x)} · 输出 ${Math.round(readout.y)}`
+          : "平滑点曲线"}
+      </output>
       <canvas
         ref={ref}
         className="curve-canvas"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
-        onPointerUp={() => { dragIndex.current = null; }}
-        onPointerCancel={() => { dragIndex.current = null; }}
+        onPointerUp={finishInteraction}
+        onPointerCancel={finishInteraction}
         onDoubleClick={handleDoubleClick}
         aria-label={`${CHANNELS.find((item) => item.id === channel)?.label}曲线编辑器`}
       />
@@ -539,6 +595,8 @@ export function App() {
   const [channel, setChannel] = useState("master");
   const [displayHistogram, setDisplayHistogram] = useState(null);
   const [processing, setProcessing] = useState(false);
+  const [curveDragging, setCurveDragging] = useState(false);
+  const [baseRevision, setBaseRevision] = useState(0);
   const [exported, setExported] = useState(false);
   const [importErrors, setImportErrors] = useState([]);
   const [savedStyles, setSavedStyles] = useState(() => {
@@ -556,6 +614,7 @@ export function App() {
   });
   const originalCanvas = useRef(null);
   const styledCanvas = useRef(null);
+  const styledBase = useRef(null);
   const referenceInput = useRef(null);
   const targetInput = useRef(null);
   const active = targets.find((item) => item.id === activeId) || targets[0] || null;
@@ -799,12 +858,21 @@ export function App() {
         const data = imageData.data;
         const source = active.stats || analyzePixels(data);
         const reference = referenceStats || source;
-        const masterLut = curveLut(settings.curves.master);
-        const colorLuts = [curveLut(settings.curves.red), curveLut(settings.curves.green), curveLut(settings.curves.blue)];
-        applyStyleProfile(data, source, reference, settings, [masterLut, ...colorLuts]);
+        applyStyleProfile(
+          data,
+          source,
+          reference,
+          settings,
+          [IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT],
+        );
         if (cancelled) return;
-        styledContext.putImageData(imageData, 0, 0);
-        setDisplayHistogram(getHistogram(data));
+        styledBase.current = {
+          data: new Uint8ClampedArray(data),
+          width: imageData.width,
+          height: imageData.height,
+        };
+        styledContext.clearRect(0, 0, imageData.width, imageData.height);
+        setBaseRevision((value) => value + 1);
         setProcessing(false);
       }).catch(() => {
         if (!cancelled) setProcessing(false);
@@ -814,7 +882,42 @@ export function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [active, referenceStats, settings]);
+  }, [
+    active?.url,
+    active?.stats,
+    referenceStats,
+    settings.strength,
+    settings.temperature,
+    settings.contrast,
+    settings.saturation,
+    settings.grain,
+  ]);
+
+  useEffect(() => {
+    const base = styledBase.current;
+    const canvas = styledCanvas.current;
+    if (!base || !canvas) return;
+    let cancelled = false;
+    let histogramTimer = null;
+    const frame = requestAnimationFrame(() => {
+      const output = new Uint8ClampedArray(base.data);
+      applyCurveLuts(output, settings.curves);
+      if (cancelled) return;
+      canvas.getContext("2d").putImageData(
+        new ImageData(output, base.width, base.height),
+        0,
+        0,
+      );
+      histogramTimer = window.setTimeout(() => {
+        if (!cancelled) setDisplayHistogram(getHistogram(output));
+      }, 140);
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      if (histogramTimer !== null) window.clearTimeout(histogramTimer);
+    };
+  }, [baseRevision, settings.curves]);
 
   function updateSplit(event) {
     if (!dragging && event.type === "pointermove") return;
@@ -912,8 +1015,8 @@ export function App() {
           <div className="control-dock glass-surface">
             <div className="strength-control">
               <span>风格强度</span>
-              <small className={processing ? "engine-status active" : "engine-status"}>
-                {processing ? "正在精细匹配…" : "感知匹配"}
+              <small className={processing || curveDragging ? "engine-status active" : "engine-status"}>
+                {processing ? "正在精细匹配…" : curveDragging ? "曲线实时预览" : "感知匹配"}
               </small>
               <strong>{settings.strength}%</strong>
             </div>
@@ -963,8 +1066,14 @@ export function App() {
                 >{item.label}</button>
               ))}
             </div>
-            <CurveEditor channel={channel} points={settings.curves[channel]} histogram={displayHistogram || active?.stats?.histogram} onChange={updateCurve} />
-            <p className="curve-help">点击添加控制点 · 双击删除</p>
+            <CurveEditor
+              channel={channel}
+              points={settings.curves[channel]}
+              histogram={displayHistogram || active?.stats?.histogram}
+              onChange={updateCurve}
+              onInteractionChange={setCurveDragging}
+            />
+            <p className="curve-help">点击添加控制点 · 拖动时实时预览 · 双击删除</p>
           </section>
           <section className="inspector-section adjustments">
             <Range label="色温" value={settings.temperature} min={-40} max={40} onChange={(temperature) => updateActiveSettings({ temperature, preset: "custom" })} />
