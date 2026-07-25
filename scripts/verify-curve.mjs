@@ -43,6 +43,31 @@ assert.notEqual(
   "Curve fell back to straight point-to-point interpolation",
 );
 
+const singleControlPoint = [
+  { x: 0, y: 0 },
+  { x: 128, y: 180 },
+  { x: 255, y: 255 },
+];
+const singlePointCurve = smoothCurveLut(singleControlPoint);
+const peakDisplacement = Math.max(
+  ...singlePointCurve.map((output, input) => output - input),
+);
+assert.equal(
+  singlePointCurve[128] - 128,
+  peakDisplacement,
+  "A single raised control point was not the peak of the whole-curve adjustment",
+);
+
+const twoControlPoints = [
+  { x: 0, y: 0 },
+  { x: 72, y: 104 },
+  { x: 174, y: 196 },
+  { x: 255, y: 255 },
+];
+const twoPointCurve = smoothCurveLut(twoControlPoints);
+assert.equal(twoPointCurve[72], 104, "Curve did not pass through the first added point");
+assert.equal(twoPointCurve[174], 196, "Curve did not pass through the second added point");
+
 const curves = {
   master: points,
   red: [{ x: 0, y: 8 }, { x: 255, y: 245 }],
@@ -69,4 +94,4 @@ assert.deepEqual(
   "Curve LUT composition did not match master-then-channel behavior",
 );
 
-console.log("Curve verification passed: smooth interpolation, control points, no overshoot, LUT composition.");
+console.log("Curve verification passed: whole-curve spline, control-point peaks, no overshoot, LUT composition.");

@@ -42,6 +42,7 @@ const DEFAULT_CURVES = {
   blue: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
 };
 const IDENTITY_LUT = Uint8Array.from({ length: 256 }, (_, value) => value);
+const CURVE_PREVIEW_MAX_SIDE = 720;
 const RAW_EXTENSIONS = new Set([
   "3fr", "ari", "arw", "bay", "braw", "cap", "cr2", "cr3", "crw", "dcr",
   "dcs", "dng", "drf", "eip", "erf", "fff", "gpr", "iiq", "k25", "kdc",
@@ -155,6 +156,52 @@ function drawSized(image, canvas, maxSide = MAX_SIDE) {
   context.clearRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
   return context;
+}
+
+function makeCurvePreviewBase(base) {
+  const longestSide = Math.max(base.width, base.height);
+  if (longestSide <= CURVE_PREVIEW_MAX_SIDE) return base;
+  const scale = CURVE_PREVIEW_MAX_SIDE / longestSide;
+  const width = Math.max(1, Math.round(base.width * scale));
+  const height = Math.max(1, Math.round(base.height * scale));
+  const source = document.createElement("canvas");
+  source.width = base.width;
+  source.height = base.height;
+  source.getContext("2d").putImageData(
+    new ImageData(base.data, base.width, base.height),
+    0,
+    0,
+  );
+  const preview = document.createElement("canvas");
+  preview.width = width;
+  preview.height = height;
+  const context = preview.getContext("2d", { willReadFrequently: true });
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(source, 0, 0, width, height);
+  return {
+    data: context.getImageData(0, 0, width, height).data,
+    width,
+    height,
+  };
+}
+
+function renderCurveBase(base, curves, canvas, outputRef) {
+  let output = outputRef.current;
+  if (!output || output.length !== base.data.length) {
+    output = new Uint8ClampedArray(base.data.length);
+    outputRef.current = output;
+  }
+  output.set(base.data);
+  applyCurveLuts(output, curves);
+  if (canvas.width !== base.width) canvas.width = base.width;
+  if (canvas.height !== base.height) canvas.height = base.height;
+  canvas.getContext("2d").putImageData(
+    new ImageData(output, base.width, base.height),
+    0,
+    0,
+  );
+  return output;
 }
 
 async function analyzeUrl(url) {
@@ -305,12 +352,20 @@ function HistogramCanvas({ histogram }) {
   return <canvas ref={ref} className="histogram-canvas" aria-label="当前照片 RGB 直方图" />;
 }
 
-function CurveEditor({ channel, points, histogram, onChange, onInteractionChange }) {
+function CurveEditor({
+  channel,
+  points,
+  histogram,
+  onChange,
+  onPreview,
+  onInteractionChange,
+}) {
   const ref = useRef(null);
+  const boundsRef = useRef(null);
   const dragIndex = useRef(null);
   const livePointsRef = useRef(points);
   const pendingPoints = useRef(null);
-  const changeFrame = useRef(null);
+  const previewFrame = useRef(null);
   const [livePoints, setLivePoints] = useState(points);
   const [readout, setReadout] = useState(null);
   const channelColor = CHANNELS.find((item) => item.id === channel)?.color || "#f5f5f7";
@@ -322,11 +377,11 @@ function CurveEditor({ channel, points, histogram, onChange, onInteractionChange
   }, [channel, points]);
 
   useEffect(() => () => {
-    if (changeFrame.current !== null) cancelAnimationFrame(changeFrame.current);
+    if (previewFrame.current !== null) cancelAnimationFrame(previewFrame.current);
   }, []);
 
   function coordinates(event) {
-    const rect = ref.current.getBoundingClientRect();
+    const rect = boundsRef.current || ref.current.getBoundingClientRect();
     return {
       x: clamp(((event.clientX - rect.left) / rect.width) * 255),
       y: clamp((1 - (event.clientY - rect.top) / rect.height) * 255),
@@ -346,24 +401,22 @@ function CurveEditor({ channel, points, histogram, onChange, onInteractionChange
     return best;
   }
 
-  function queueChange(next) {
+  function queuePreview(next) {
     livePointsRef.current = next;
     pendingPoints.current = next;
     setLivePoints(next);
-    if (changeFrame.current !== null) return;
-    changeFrame.current = requestAnimationFrame(() => {
-      changeFrame.current = null;
+    if (previewFrame.current !== null) return;
+    previewFrame.current = requestAnimationFrame(() => {
+      previewFrame.current = null;
       if (!pendingPoints.current) return;
-      const value = pendingPoints.current;
-      pendingPoints.current = null;
-      onChange(value);
+      onPreview(pendingPoints.current);
     });
   }
 
   function flushChange() {
     if (!pendingPoints.current) return;
-    if (changeFrame.current !== null) cancelAnimationFrame(changeFrame.current);
-    changeFrame.current = null;
+    if (previewFrame.current !== null) cancelAnimationFrame(previewFrame.current);
+    previewFrame.current = null;
     const value = pendingPoints.current;
     pendingPoints.current = null;
     onChange(value);
@@ -371,6 +424,7 @@ function CurveEditor({ channel, points, histogram, onChange, onInteractionChange
 
   function handlePointerDown(event) {
     event.preventDefault();
+    boundsRef.current = event.currentTarget.getBoundingClientRect();
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = coordinates(event);
     const index = nearest(point);
@@ -383,7 +437,7 @@ function CurveEditor({ channel, points, histogram, onChange, onInteractionChange
       const next = [...livePointsRef.current, point].sort((a, b) => a.x - b.x);
       dragIndex.current = next.findIndex((item) => item === point);
       setReadout(point);
-      queueChange(next);
+      queuePreview(next);
     }
   }
 
@@ -401,7 +455,7 @@ function CurveEditor({ channel, points, histogram, onChange, onInteractionChange
       };
     });
     setReadout(next[dragIndex.current]);
-    queueChange(next);
+    queuePreview(next);
   }
 
   function finishInteraction(event) {
@@ -409,6 +463,7 @@ function CurveEditor({ channel, points, histogram, onChange, onInteractionChange
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    boundsRef.current = null;
     dragIndex.current = null;
     onInteractionChange?.(false);
   }
@@ -418,8 +473,14 @@ function CurveEditor({ channel, points, histogram, onChange, onInteractionChange
     const current = livePointsRef.current;
     if (index > 0 && index < current.length - 1) {
       const next = current.filter((_, item) => item !== index);
+      if (previewFrame.current !== null) cancelAnimationFrame(previewFrame.current);
+      previewFrame.current = null;
+      pendingPoints.current = null;
+      livePointsRef.current = next;
+      setLivePoints(next);
       setReadout(null);
-      queueChange(next);
+      onPreview(next);
+      onChange(next);
     }
   }
 
@@ -429,10 +490,12 @@ function CurveEditor({ channel, points, histogram, onChange, onInteractionChange
     const ratio = window.devicePixelRatio || 1;
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-    canvas.width = width * ratio;
-    canvas.height = height * ratio;
+    const pixelWidth = Math.round(width * ratio);
+    const pixelHeight = Math.round(height * ratio);
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
     const context = canvas.getContext("2d");
-    context.scale(ratio, ratio);
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, height);
 
     context.strokeStyle = "rgba(255,255,255,.08)";
@@ -615,6 +678,9 @@ export function App() {
   const originalCanvas = useRef(null);
   const styledCanvas = useRef(null);
   const styledBase = useRef(null);
+  const styledPreviewBase = useRef(null);
+  const styledOutput = useRef(null);
+  const curvePreviewOutput = useRef(null);
   const referenceInput = useRef(null);
   const targetInput = useRef(null);
   const active = targets.find((item) => item.id === activeId) || targets[0] || null;
@@ -683,6 +749,12 @@ export function App() {
   async function exportImage() {
     if (!active || !styledCanvas.current) return;
     const source = styledCanvas.current;
+    if (
+      styledBase.current
+      && (source.width !== styledBase.current.width || source.height !== styledBase.current.height)
+    ) {
+      renderCurveBase(styledBase.current, settings.curves, source, styledOutput);
+    }
     const longEdge = {
       original: Math.max(source.width, source.height),
       "4k": 3840,
@@ -845,6 +917,18 @@ export function App() {
     });
   }
 
+  function previewCurve(points) {
+    const base = styledPreviewBase.current || styledBase.current;
+    const canvas = styledCanvas.current;
+    if (!base || !canvas) return;
+    renderCurveBase(
+      base,
+      { ...settings.curves, [channel]: points },
+      canvas,
+      curvePreviewOutput,
+    );
+  }
+
   useEffect(() => {
     if (!active?.url || !originalCanvas.current || !styledCanvas.current) return;
     let cancelled = false;
@@ -866,11 +950,15 @@ export function App() {
           [IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT],
         );
         if (cancelled) return;
-        styledBase.current = {
+        const base = {
           data: new Uint8ClampedArray(data),
           width: imageData.width,
           height: imageData.height,
         };
+        styledBase.current = base;
+        styledPreviewBase.current = makeCurvePreviewBase(base);
+        styledOutput.current = null;
+        curvePreviewOutput.current = null;
         styledContext.clearRect(0, 0, imageData.width, imageData.height);
         setBaseRevision((value) => value + 1);
         setProcessing(false);
@@ -900,14 +988,13 @@ export function App() {
     let cancelled = false;
     let histogramTimer = null;
     const frame = requestAnimationFrame(() => {
-      const output = new Uint8ClampedArray(base.data);
-      applyCurveLuts(output, settings.curves);
-      if (cancelled) return;
-      canvas.getContext("2d").putImageData(
-        new ImageData(output, base.width, base.height),
-        0,
-        0,
+      const output = renderCurveBase(
+        base,
+        settings.curves,
+        canvas,
+        styledOutput,
       );
+      if (cancelled) return;
       histogramTimer = window.setTimeout(() => {
         if (!cancelled) setDisplayHistogram(getHistogram(output));
       }, 140);
@@ -1071,6 +1158,7 @@ export function App() {
               points={settings.curves[channel]}
               histogram={displayHistogram || active?.stats?.histogram}
               onChange={updateCurve}
+              onPreview={previewCurve}
               onInteractionChange={setCurveDragging}
             />
             <p className="curve-help">点击添加控制点 · 拖动时实时预览 · 双击删除</p>

@@ -13,15 +13,26 @@ export function smoothCurveLut(points) {
   const tangents = sorted.map((_, index) => {
     if (index === 0) return slopes[0] ?? 0;
     if (index === sorted.length - 1) return slopes.at(-1) ?? 0;
-    const previousSlope = slopes[index - 1];
-    const nextSlope = slopes[index];
-    if (!previousSlope || !nextSlope || previousSlope * nextSlope <= 0) return 0;
-    const previousWidth = sorted[index].x - sorted[index - 1].x;
-    const nextWidth = sorted[index + 1].x - sorted[index].x;
-    const firstWeight = 2 * nextWidth + previousWidth;
-    const secondWeight = nextWidth + 2 * previousWidth;
-    return (firstWeight + secondWeight)
-      / (firstWeight / previousSlope + secondWeight / nextSlope);
+    const previous = sorted[index - 1];
+    const next = sorted[index + 1];
+    return (next.y - previous.y) / Math.max(1, next.x - previous.x);
+  });
+  slopes.forEach((slope, index) => {
+    if (slope === 0) {
+      tangents[index] = 0;
+      tangents[index + 1] = 0;
+      return;
+    }
+    if (tangents[index] * slope < 0) tangents[index] = 0;
+    if (tangents[index + 1] * slope < 0) tangents[index + 1] = 0;
+    const startRatio = tangents[index] / slope;
+    const endRatio = tangents[index + 1] / slope;
+    const magnitude = Math.hypot(startRatio, endRatio);
+    if (magnitude > 3) {
+      const scale = 3 / magnitude;
+      tangents[index] = scale * startRatio * slope;
+      tangents[index + 1] = scale * endRatio * slope;
+    }
   });
 
   const lut = new Uint8Array(256);
@@ -47,16 +58,18 @@ export function smoothCurveLut(points) {
 
 export function applyCurveLuts(data, curves) {
   const master = smoothCurveLut(curves.master);
-  const channels = [
+  const channelCurves = [
     smoothCurveLut(curves.red),
     smoothCurveLut(curves.green),
     smoothCurveLut(curves.blue),
   ];
+  const channels = channelCurves.map((channel) =>
+    Uint8Array.from(master, (value) => channel[value]));
   for (let index = 0; index < data.length; index += 4) {
     if (data[index + 3] < 16) continue;
-    data[index] = channels[0][master[data[index]]];
-    data[index + 1] = channels[1][master[data[index + 1]]];
-    data[index + 2] = channels[2][master[data[index + 2]]];
+    data[index] = channels[0][data[index]];
+    data[index + 1] = channels[1][data[index + 1]];
+    data[index + 2] = channels[2][data[index + 2]];
   }
   return data;
 }
