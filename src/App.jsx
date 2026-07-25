@@ -13,6 +13,14 @@ import {
 } from "@phosphor-icons/react";
 import LibRaw from "libraw-wasm";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  HUE_BANDS,
+  analyzePixels,
+  applyStyleProfile,
+  averageProfiles,
+  getHistogram,
+  makePalette,
+} from "./colorEngine";
 
 const MAX_SIDE = 1600;
 const CHANNELS = [
@@ -147,71 +155,11 @@ function drawSized(image, canvas, maxSide = MAX_SIDE) {
   return context;
 }
 
-function getHistogram(data, bins = 64) {
-  const histogram = {
-    red: Array(bins).fill(0),
-    green: Array(bins).fill(0),
-    blue: Array(bins).fill(0),
-    master: Array(bins).fill(0),
-  };
-  const step = 256 / bins;
-  for (let index = 0; index < data.length; index += 4) {
-    const red = data[index];
-    const green = data[index + 1];
-    const blue = data[index + 2];
-    const light = red * 0.299 + green * 0.587 + blue * 0.114;
-    histogram.red[Math.min(bins - 1, Math.floor(red / step))] += 1;
-    histogram.green[Math.min(bins - 1, Math.floor(green / step))] += 1;
-    histogram.blue[Math.min(bins - 1, Math.floor(blue / step))] += 1;
-    histogram.master[Math.min(bins - 1, Math.floor(light / step))] += 1;
-  }
-  for (const channel of Object.keys(histogram)) {
-    const peak = Math.max(...histogram[channel], 1);
-    histogram[channel] = histogram[channel].map((value) => value / peak);
-  }
-  return histogram;
-}
-
-function getStats(data) {
-  const sums = [0, 0, 0];
-  const squares = [0, 0, 0];
-  let saturation = 0;
-  const count = data.length / 4;
-  for (let index = 0; index < data.length; index += 4) {
-    const rgb = [data[index], data[index + 1], data[index + 2]];
-    for (let channel = 0; channel < 3; channel += 1) {
-      sums[channel] += rgb[channel];
-      squares[channel] += rgb[channel] * rgb[channel];
-    }
-    const high = Math.max(...rgb);
-    const low = Math.min(...rgb);
-    saturation += high === 0 ? 0 : (high - low) / high;
-  }
-  const mean = sums.map((sum) => sum / count);
-  const std = squares.map((sum, channel) =>
-    Math.sqrt(Math.max(1, sum / count - mean[channel] * mean[channel])),
-  );
-  return { mean, std, saturation: saturation / count, histogram: getHistogram(data) };
-}
-
 async function analyzeUrl(url) {
   const image = await loadImage(url);
   const canvas = document.createElement("canvas");
-  const context = drawSized(image, canvas, 420);
-  return getStats(context.getImageData(0, 0, canvas.width, canvas.height).data);
-}
-
-function averageStats(items) {
-  const count = items.length;
-  return {
-    mean: [0, 1, 2].map((channel) =>
-      items.reduce((sum, item) => sum + item.mean[channel], 0) / count,
-    ),
-    std: [0, 1, 2].map((channel) =>
-      items.reduce((sum, item) => sum + item.std[channel], 0) / count,
-    ),
-    saturation: items.reduce((sum, item) => sum + item.saturation, 0) / count,
-  };
+  const context = drawSized(image, canvas, 640);
+  return analyzePixels(context.getImageData(0, 0, canvas.width, canvas.height).data);
 }
 
 function curveLut(points) {
@@ -226,17 +174,6 @@ function curveLut(points) {
     lut[x] = clamp(Math.round(start.y + (end.y - start.y) * clamp(ratio, 0, 1)));
   }
   return lut;
-}
-
-function rgbToHex(rgb) {
-  return `#${rgb.map((value) => Math.round(clamp(value)).toString(16).padStart(2, "0")).join("")}`;
-}
-
-function makePalette(stats) {
-  if (!stats) return ["#292b2f", "#53565c", "#888b90", "#b8b9bc", "#e2e2e4"];
-  return [-0.85, -0.35, 0, 0.4, 0.8].map((factor) =>
-    rgbToHex(stats.mean.map((value, channel) => value + stats.std[channel] * factor)),
-  );
 }
 
 function downloadCanvas(canvas, name, onDone) {
@@ -527,6 +464,69 @@ function Range({ label, value, min, max, onChange, signed = true }) {
   );
 }
 
+function StyleAnalysis({ profile }) {
+  if (!profile) {
+    return (
+      <section className="inspector-section style-analysis muted-analysis">
+        <div className="section-title"><h2>风格 DNA</h2><span>等待样片</span></div>
+        <p>上传参考图后分析影调、三段色偏和七色色域。</p>
+      </section>
+    );
+  }
+  if (profile.version < 2 || !profile.tone) {
+    return (
+      <section className="inspector-section style-analysis muted-analysis">
+        <div className="section-title"><h2>风格 DNA</h2><span>兼容模式</span></div>
+        <p>这是旧版滤镜。重新上传参考图即可生成精细色彩档案。</p>
+      </section>
+    );
+  }
+  const toneMetrics = [
+    ["黑位", profile.tone.blackPoint],
+    ["中灰", profile.tone.midtone],
+    ["白位", profile.tone.whitePoint],
+  ];
+  return (
+    <section className="inspector-section style-analysis">
+      <div className="section-title">
+        <h2>风格 DNA</h2>
+        <span className="analysis-version">感知分析 v2</span>
+      </div>
+      <div className="tone-metrics" aria-label="影调分析">
+        {toneMetrics.map(([label, value]) => (
+          <div key={label}><span>{label}</span><strong>{Math.round(value)}</strong></div>
+        ))}
+      </div>
+      <div className="tone-zones">
+        {profile.zones.map((zone) => (
+          <div key={zone.id}>
+            <span
+              className="tone-swatch"
+              style={{ background: `rgb(${zone.rgb.join(",")})` }}
+            />
+            <span>{zone.label}</span>
+            <b>{Math.round(zone.lightness * 100)}</b>
+          </div>
+        ))}
+      </div>
+      <div className="spectrum-heading"><span>七色色谱</span><small>色相 · 浓度</small></div>
+      <div className="color-spectrum">
+        {profile.colors.map((color, index) => {
+          const band = HUE_BANDS[index];
+          const amount = Math.max(5, Math.min(100, color.chroma / 0.18 * 100));
+          return (
+            <div key={color.id} className="spectrum-row">
+              <span>{band.label}</span>
+              <i><b style={{ width: `${amount}%`, background: band.color }} /></i>
+              <output>{Math.round(color.hue)}°</output>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export function App() {
   const [references, setReferences] = useState([]);
   const [referenceStats, setReferenceStats] = useState(null);
@@ -538,6 +538,7 @@ export function App() {
   const [dragging, setDragging] = useState(false);
   const [channel, setChannel] = useState("master");
   const [displayHistogram, setDisplayHistogram] = useState(null);
+  const [processing, setProcessing] = useState(false);
   const [exported, setExported] = useState(false);
   const [importErrors, setImportErrors] = useState([]);
   const [savedStyles, setSavedStyles] = useState(() => {
@@ -678,7 +679,7 @@ export function App() {
       const all = [...references, ...next].slice(0, 8);
       setReferences(all);
       const stats = await Promise.all(all.map((item) => analyzeUrl(item.url)));
-      setReferenceStats(averageStats(stats));
+      setReferenceStats(averageProfiles(stats));
     } finally {
       setAnalyzing(false);
     }
@@ -734,7 +735,7 @@ export function App() {
         },
       }));
       setReferences(demoReferences);
-      setReferenceStats(averageStats(refStats));
+      setReferenceStats(averageProfiles(refStats));
       setTargets(demoTargets);
       setActiveId(demoTargets[0].id);
     } finally {
@@ -751,7 +752,7 @@ export function App() {
     else {
       setAnalyzing(true);
       Promise.all(next.map((item) => analyzeUrl(item.url)))
-        .then((stats) => setReferenceStats(averageStats(stats)))
+        .then((stats) => setReferenceStats(averageProfiles(stats)))
         .finally(() => setAnalyzing(false));
     }
   }
@@ -788,46 +789,31 @@ export function App() {
   useEffect(() => {
     if (!active?.url || !originalCanvas.current || !styledCanvas.current) return;
     let cancelled = false;
-    loadImage(active.url).then((image) => {
-      if (cancelled) return;
-      const originalContext = drawSized(image, originalCanvas.current);
-      const styledContext = drawSized(image, styledCanvas.current);
-      const imageData = originalContext.getImageData(0, 0, originalCanvas.current.width, originalCanvas.current.height);
-      const data = imageData.data;
-      const source = active.stats || getStats(data);
-      const reference = referenceStats || source;
-      const blend = settings.strength / 100;
-      const contrastFactor = (259 * (settings.contrast + 255)) / (255 * (259 - settings.contrast));
-      const satFactor = 1 + settings.saturation / 100;
-      const masterLut = curveLut(settings.curves.master);
-      const colorLuts = [curveLut(settings.curves.red), curveLut(settings.curves.green), curveLut(settings.curves.blue)];
-
-      for (let index = 0; index < data.length; index += 4) {
-        const sourceRgb = [data[index], data[index + 1], data[index + 2]];
-        const mapped = sourceRgb.map((value, color) => {
-          const transferred = ((value - source.mean[color]) / Math.max(8, source.std[color])) * reference.std[color] + reference.mean[color];
-          return value + (transferred - value) * blend;
-        });
-        mapped[0] += settings.temperature * 0.55;
-        mapped[2] -= settings.temperature * 0.55;
-        const luminance = mapped[0] * 0.299 + mapped[1] * 0.587 + mapped[2] * 0.114;
-        let hash = (index / 4) ^ 0x9e3779b9;
-        hash = Math.imul(hash ^ (hash >>> 16), 0x21f0aaad);
-        hash = Math.imul(hash ^ (hash >>> 15), 0x735a2d97);
-        hash ^= hash >>> 15;
-        const midtoneWeight = 0.35 + 0.65 * (1 - Math.abs(luminance - 128) / 128);
-        const noise = (((hash >>> 0) / 4294967295) - 0.5) * settings.grain * 2 * midtoneWeight;
-        for (let color = 0; color < 3; color += 1) {
-          const saturated = luminance + (mapped[color] - luminance) * satFactor;
-          const adjusted = clamp(contrastFactor * (saturated - 128) + 128 + noise);
-          data[index + color] = colorLuts[color][masterLut[Math.round(adjusted)]];
-        }
-      }
-      if (cancelled) return;
-      styledContext.putImageData(imageData, 0, 0);
-      setDisplayHistogram(getHistogram(data));
-    });
-    return () => { cancelled = true; };
+    const timer = window.setTimeout(() => {
+      setProcessing(true);
+      loadImage(active.url).then((image) => {
+        if (cancelled) return;
+        const originalContext = drawSized(image, originalCanvas.current);
+        const styledContext = drawSized(image, styledCanvas.current);
+        const imageData = originalContext.getImageData(0, 0, originalCanvas.current.width, originalCanvas.current.height);
+        const data = imageData.data;
+        const source = active.stats || analyzePixels(data);
+        const reference = referenceStats || source;
+        const masterLut = curveLut(settings.curves.master);
+        const colorLuts = [curveLut(settings.curves.red), curveLut(settings.curves.green), curveLut(settings.curves.blue)];
+        applyStyleProfile(data, source, reference, settings, [masterLut, ...colorLuts]);
+        if (cancelled) return;
+        styledContext.putImageData(imageData, 0, 0);
+        setDisplayHistogram(getHistogram(data));
+        setProcessing(false);
+      }).catch(() => {
+        if (!cancelled) setProcessing(false);
+      });
+    }, 42);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [active, referenceStats, settings]);
 
   function updateSplit(event) {
@@ -839,7 +825,7 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span></div>
+        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 2</small></div>
         <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
         <div className="header-actions">
           <GlassButton className="demo-button" onClick={loadDemo}><Sparkle size={15} />加载示例</GlassButton>
@@ -878,7 +864,7 @@ export function App() {
           )}
           <div className="reference-status">
             <span className={referenceStats ? "status-dot ready" : "status-dot"} />
-            {analyzing ? (decodeStatus || "正在分析…") : referenceStats ? "参考风格已就绪" : "等待参考图"}
+            {analyzing ? (decodeStatus || "正在构建感知色彩档案…") : referenceStats ? "感知风格档案已就绪" : "等待参考图"}
           </div>
           <div className="saved-style-block">
             <div className="saved-style-heading"><span>我的滤镜</span><GlassButton className="save-style-button" disabled={!referenceStats} onClick={() => setStyleDialogOpen(true)}><Plus size={13} />保存</GlassButton></div>
@@ -924,7 +910,13 @@ export function App() {
           </div>
 
           <div className="control-dock glass-surface">
-            <div className="strength-control"><span>风格强度</span><strong>{settings.strength}%</strong></div>
+            <div className="strength-control">
+              <span>风格强度</span>
+              <small className={processing ? "engine-status active" : "engine-status"}>
+                {processing ? "正在精细匹配…" : "感知匹配"}
+              </small>
+              <strong>{settings.strength}%</strong>
+            </div>
             <input type="range" min="0" max="100" value={settings.strength} disabled={!active} onChange={(event) => updateActiveSettings({ strength: Number(event.target.value), preset: "custom" })} />
             <div className="preset-group">
               {Object.entries(PRESETS).map(([key, item]) => (
@@ -959,6 +951,7 @@ export function App() {
             <div className="section-title"><h2>直方图</h2><CaretDown size={15} /></div>
             <HistogramCanvas histogram={displayHistogram || active?.stats?.histogram} />
           </section>
+          <StyleAnalysis profile={referenceStats} />
           <section className="inspector-section curve-section">
             <div className="section-title"><h2>曲线</h2><GlassButton className="reset-curve" onClick={() => updateCurve(structuredClone(DEFAULT_CURVES[channel]))}><ArrowCounterClockwise size={13} />重置</GlassButton></div>
             <div className="channel-tabs glass-surface">
@@ -981,7 +974,7 @@ export function App() {
           </section>
           <section className="palette-section">
             <div>{palette.map((color) => <span key={color} style={{ background: color }} />)}</div>
-            <p>{referenceStats ? `参考色彩 · ${referenceStats.saturation < 0.35 ? "克制饱和" : "鲜明色彩"}` : "上传参考图生成色板"}</p>
+            <p>{referenceStats ? `参考色彩 · ${referenceStats.saturation < 0.35 ? "克制饱和" : "鲜明色彩"} · 三段影调取色` : "上传参考图生成色板"}</p>
           </section>
         </aside>
       </section>
@@ -996,7 +989,7 @@ export function App() {
         <div className="modal-backdrop" onMouseDown={() => setStyleDialogOpen(false)}>
           <section className="modal glass-panel" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-title"><div><Sparkle size={18} /><h2>保存参考风格</h2></div><GlassButton className="mini-button" onClick={() => setStyleDialogOpen(false)}><X size={14} /></GlassButton></div>
-            <p>色彩均值、对比范围和饱和倾向会保存在这台设备的浏览器中。</p>
+            <p>影调分位、暗中亮三段色偏和七色色域档案会保存在这台设备的浏览器中。</p>
             <label className="field-label">滤镜名称<input autoFocus value={styleName} placeholder="例如：加州暖阳" onChange={(event) => setStyleName(event.target.value)} /></label>
             <div className="dialog-actions"><GlassButton onClick={() => setStyleDialogOpen(false)}>取消</GlassButton><button className="primary-button" disabled={!styleName.trim()} onClick={saveReferenceStyle}>保存滤镜</button></div>
           </section>
