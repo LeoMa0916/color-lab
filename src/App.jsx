@@ -21,6 +21,7 @@ import {
   getHistogram,
   makePalette,
 } from "./colorEngine";
+import { adjustBasicPixel, applyBasicAdjustments } from "./basicAdjustments";
 import { applyCurveLuts, smoothCurveLut as curveLut } from "./curveMath";
 
 const MAX_SIDE = 1600;
@@ -30,10 +31,32 @@ const CHANNELS = [
   { id: "green", label: "绿", color: "#62d46f" },
   { id: "blue", label: "蓝", color: "#5b8cff" },
 ];
+const BASIC_DEFAULTS = {
+  tint: 0,
+  exposure: 0,
+  highlights: 0,
+  shadows: 0,
+  whites: 0,
+  blacks: 0,
+  texture: 0,
+  clarity: 0,
+  dehaze: 0,
+  vibrance: 0,
+};
 const PRESETS = {
-  faithful: { label: "忠于参考", strength: 82, contrast: 0, saturation: 0, temperature: 0, grain: 0 },
-  balanced: { label: "自然平衡", strength: 68, contrast: -4, saturation: -2, temperature: -5, grain: 6 },
-  cinema: { label: "电影感", strength: 76, contrast: 12, saturation: -8, temperature: 8, grain: 18 },
+  faithful: { ...BASIC_DEFAULTS, label: "忠于参考", strength: 82, contrast: 0, saturation: 0, temperature: 0, grain: 0 },
+  balanced: { ...BASIC_DEFAULTS, label: "自然平衡", strength: 68, contrast: -4, saturation: -2, temperature: -5, grain: 6 },
+  cinema: {
+    ...BASIC_DEFAULTS,
+    label: "电影感",
+    strength: 76,
+    contrast: 12,
+    saturation: -8,
+    temperature: 8,
+    clarity: 6,
+    dehaze: 5,
+    grain: 18,
+  },
 };
 const DEFAULT_CURVES = {
   master: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
@@ -64,6 +87,7 @@ function defaultSettings() {
     contrast: -4,
     saturation: -2,
     grain: 6,
+    ...BASIC_DEFAULTS,
     curves: structuredClone(DEFAULT_CURVES),
   };
 }
@@ -266,6 +290,7 @@ function canvasToBmp(canvas) {
 }
 
 function xmpPreset(settings, name) {
+  const value = (key) => settings[key] ?? 0;
   const tonePoints = settings.curves.master
     .map((point) => `<rdf:li>${Math.round(point.x)}, ${Math.round(point.y)}</rdf:li>`)
     .join("");
@@ -274,8 +299,13 @@ function xmpPreset(settings, name) {
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
       crs:PresetType="Normal" crs:Name="${name}" crs:ProcessVersion="15.4"
-      crs:Temperature="${settings.temperature}" crs:Contrast2012="${settings.contrast}"
-      crs:Saturation="${settings.saturation}" crs:GrainAmount="${settings.grain}">
+      crs:Temperature="${value("temperature")}" crs:Tint="${value("tint")}"
+      crs:Exposure2012="${value("exposure")}" crs:Contrast2012="${value("contrast")}"
+      crs:Highlights2012="${value("highlights")}" crs:Shadows2012="${value("shadows")}"
+      crs:Whites2012="${value("whites")}" crs:Blacks2012="${value("blacks")}"
+      crs:Texture="${value("texture")}" crs:Clarity2012="${value("clarity")}"
+      crs:Dehaze="${value("dehaze")}" crs:Vibrance="${value("vibrance")}"
+      crs:Saturation="${value("saturation")}" crs:GrainAmount="${value("grain")}">
       <crs:ToneCurvePV2012><rdf:Seq>${tonePoints}</rdf:Seq></crs:ToneCurvePV2012>
     </rdf:Description>
   </rdf:RDF>
@@ -303,10 +333,11 @@ function cubePreset(settings, name, size = 17) {
           if (channel === 2) result -= settings.temperature * 0.55;
           return clamp(result);
         });
+        const refined = adjustBasicPixel(adjusted, settings);
         lines.push([
-          red[master[Math.round(adjusted[0])]],
-          green[master[Math.round(adjusted[1])]],
-          blue[master[Math.round(adjusted[2])]],
+          red[master[Math.round(refined[0])]],
+          green[master[Math.round(refined[1])]],
+          blue[master[Math.round(refined[2])]],
         ].map((value) => (value / 255).toFixed(6)).join(" "));
       }
     }
@@ -573,13 +604,107 @@ function GlassButton({ className = "", children, ...props }) {
   return <button className={`glass-button ${className}`} {...props}>{children}</button>;
 }
 
-function Range({ label, value, min, max, onChange, signed = true }) {
+function Range({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+  signed = true,
+  step = 1,
+  decimals = 0,
+  disabled = false,
+}) {
+  const displayValue = decimals ? Number(value).toFixed(decimals) : value;
   return (
     <label className="range-row">
       <span>{label}</span>
-      <output>{signed && value > 0 ? "+" : ""}{value}</output>
-      <input type="range" min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <output>{signed && value > 0 ? "+" : ""}{displayValue}</output>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
     </label>
+  );
+}
+
+const BASIC_GROUPS = [
+  {
+    label: "白平衡",
+    controls: [
+      { key: "temperature", label: "色温", min: -40, max: 40 },
+      { key: "tint", label: "色调", min: -100, max: 100 },
+    ],
+  },
+  {
+    label: "光线",
+    controls: [
+      { key: "exposure", label: "曝光度", min: -3, max: 3, step: 0.05, decimals: 2 },
+      { key: "contrast", label: "对比度", min: -100, max: 100 },
+      { key: "highlights", label: "高光", min: -100, max: 100 },
+      { key: "shadows", label: "阴影", min: -100, max: 100 },
+      { key: "whites", label: "白色色阶", min: -100, max: 100 },
+      { key: "blacks", label: "黑色色阶", min: -100, max: 100 },
+    ],
+  },
+  {
+    label: "质感",
+    controls: [
+      { key: "texture", label: "纹理", min: -100, max: 100 },
+      { key: "clarity", label: "清晰度", min: -100, max: 100 },
+      { key: "dehaze", label: "去朦胧", min: -100, max: 100 },
+    ],
+  },
+  {
+    label: "色彩",
+    controls: [
+      { key: "vibrance", label: "鲜艳度", min: -100, max: 100 },
+      { key: "saturation", label: "饱和度", min: -100, max: 100 },
+    ],
+  },
+];
+
+function BasicAdjustmentsPanel({ settings, disabled, onChange }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="inspector-section basic-section">
+      <button
+        type="button"
+        className="basic-toggle"
+        aria-expanded={open}
+        aria-controls="basic-adjustments"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span>基本</span>
+        <CaretDown size={15} className={open ? "open" : ""} />
+      </button>
+      {open && (
+        <div id="basic-adjustments" className="basic-adjustments">
+          {BASIC_GROUPS.map((group) => (
+            <div className="basic-group" key={group.label}>
+              <p>{group.label}</p>
+              {group.controls.map((control) => (
+                <Range
+                  key={control.key}
+                  {...control}
+                  value={settings[control.key] ?? 0}
+                  disabled={disabled}
+                  onChange={(value) => onChange({
+                    [control.key]: value,
+                    preset: "custom",
+                  })}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -949,6 +1074,7 @@ export function App() {
           settings,
           [IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT],
         );
+        applyBasicAdjustments(data, imageData.width, imageData.height, settings);
         if (cancelled) return;
         const base = {
           data: new Uint8ClampedArray(data),
@@ -976,7 +1102,17 @@ export function App() {
     referenceStats,
     settings.strength,
     settings.temperature,
+    settings.tint,
+    settings.exposure,
     settings.contrast,
+    settings.highlights,
+    settings.shadows,
+    settings.whites,
+    settings.blacks,
+    settings.texture,
+    settings.clarity,
+    settings.dehaze,
+    settings.vibrance,
     settings.saturation,
     settings.grain,
   ]);
@@ -1142,6 +1278,11 @@ export function App() {
             <HistogramCanvas histogram={displayHistogram || active?.stats?.histogram} />
           </section>
           <StyleAnalysis profile={referenceStats} />
+          <BasicAdjustmentsPanel
+            settings={settings}
+            disabled={!active}
+            onChange={updateActiveSettings}
+          />
           <section className="inspector-section curve-section">
             <div className="section-title"><h2>曲线</h2><GlassButton className="reset-curve" onClick={() => updateCurve(structuredClone(DEFAULT_CURVES[channel]))}><ArrowCounterClockwise size={13} />重置</GlassButton></div>
             <div className="channel-tabs glass-surface">
@@ -1163,11 +1304,17 @@ export function App() {
             />
             <p className="curve-help">点击添加控制点 · 拖动时实时预览 · 双击删除</p>
           </section>
-          <section className="inspector-section adjustments">
-            <Range label="色温" value={settings.temperature} min={-40} max={40} onChange={(temperature) => updateActiveSettings({ temperature, preset: "custom" })} />
-            <Range label="对比度" value={settings.contrast} min={-40} max={40} onChange={(contrast) => updateActiveSettings({ contrast, preset: "custom" })} />
-            <Range label="饱和度" value={settings.saturation} min={-40} max={40} onChange={(saturation) => updateActiveSettings({ saturation, preset: "custom" })} />
-            <Range label="胶片颗粒" value={settings.grain} min={0} max={40} signed={false} onChange={(grain) => updateActiveSettings({ grain, preset: "custom" })} />
+          <section className="inspector-section effects-section">
+            <div className="section-title"><h2>效果</h2></div>
+            <Range
+              label="胶片颗粒"
+              value={settings.grain}
+              min={0}
+              max={40}
+              signed={false}
+              disabled={!active}
+              onChange={(grain) => updateActiveSettings({ grain, preset: "custom" })}
+            />
           </section>
           <section className="palette-section">
             <div>{palette.map((color) => <span key={color} style={{ background: color }} />)}</div>
@@ -1203,7 +1350,7 @@ export function App() {
               <label className="field-label full">质量 <span>{exportOptions.quality}%</span><input type="range" min="50" max="100" value={exportOptions.quality} disabled={!["jpeg", "webp"].includes(exportOptions.format)} onChange={(event) => setExportOptions({ ...exportOptions, quality: Number(event.target.value) })} /></label>
             </div>
             <div className="preset-export">
-              <div><strong>导出调色预设</strong><p>BMP 是图片格式；XMP 用于 Lightroom/Camera Raw，CUBE LUT 可用于 Photoshop 等软件。</p></div>
+              <div><strong>导出调色预设</strong><p>XMP 会保留完整基本参数；CUBE 适用于 Photoshop 等软件，但不包含纹理、清晰度等局部质感处理。</p></div>
               <div><GlassButton onClick={() => exportPreset("xmp")}>导出 XMP</GlassButton><GlassButton onClick={() => exportPreset("cube")}>导出 CUBE</GlassButton></div>
             </div>
             <div className="dialog-actions"><GlassButton onClick={() => setExportDialogOpen(false)}>取消</GlassButton><button className="primary-button" onClick={exportImage}>导出图片</button></div>
