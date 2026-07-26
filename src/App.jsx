@@ -37,6 +37,7 @@ import {
   saveStyle,
   serializeClstyle,
 } from "./styleStore";
+import { applyTextureMatch } from "./textureEngine";
 
 const IS_MOBILE = typeof navigator !== "undefined"
   && (/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints > 2);
@@ -49,6 +50,11 @@ const CHANNELS = [
 ];
 const BASIC_DEFAULTS = {
   referenceLighting: 35,
+  grainSize: 1,
+  grainRoughness: 50,
+  grainColor: 12,
+  grainHighlights: 25,
+  grainSeed: 1847,
   tint: 0,
   exposure: 0,
   highlights: 0,
@@ -971,6 +977,28 @@ function StyleAnalysis({ profile }) {
           </span>
         </div>
       )}
+      {profile.texture?.spectrum && (
+        <div className="texture-spectrum" aria-label="多尺度质感分析">
+          <div>
+            <span>质感频谱</span>
+            <small>1 / 2 / 4 / 8 px</small>
+          </div>
+          <div className="texture-bars">
+            {profile.texture.spectrum.map((value, index) => (
+              <i key={profile.texture.scales?.[index] || index}>
+                <b style={{ height: `${Math.min(100, Math.max(6, value * 1800))}%` }} />
+              </i>
+            ))}
+          </div>
+          <p>
+            锐度 {Math.round(profile.texture.acutance * 100)}
+            <span>·</span>
+            边缘过冲 {Math.round(profile.texture.edgeOvershoot * 100)}
+            <span>·</span>
+            涂抹 {Math.round(profile.texture.smear * 100)}
+          </p>
+        </div>
+      )}
       <div className="tone-metrics" aria-label="影调分析">
         {toneMetrics.map(([label, value]) => (
           <div key={label}><span>{label}</span><strong>{Math.round(value)}</strong></div>
@@ -1257,6 +1285,14 @@ export function App() {
         styleLuts,
         semanticMasks,
       );
+      applyTextureMatch(
+        imageData.data,
+        source.width,
+        source.height,
+        sourceProfile,
+        referenceStats || sourceProfile,
+        settings.strength / 100,
+      );
       applyBasicAdjustments(imageData.data, source.width, source.height, settings);
       applyCurveLuts(imageData.data, settings.curves);
       context.putImageData(imageData, 0, 0);
@@ -1486,6 +1522,14 @@ export function App() {
           styleLuts,
           semanticMasks,
         );
+        applyTextureMatch(
+          data,
+          imageData.width,
+          imageData.height,
+          source,
+          reference,
+          settings.strength / 100,
+        );
         if (cancelled) return;
         const base = {
           data: new Uint8ClampedArray(data),
@@ -1575,6 +1619,10 @@ export function App() {
     settings.vibrance,
     settings.saturation,
     settings.grain,
+    settings.grainSize,
+    settings.grainRoughness,
+    settings.grainColor,
+    settings.grainHighlights,
     settings.curves,
   ]);
 
@@ -1801,6 +1849,52 @@ export function App() {
               })}
               onInteractionChange={setBasicDragging}
               onChange={(grain) => updateActiveSettings({ grain, preset: "custom" })}
+            />
+            <Range
+              label="颗粒大小"
+              value={settings.grainSize}
+              min={0.5}
+              max={4}
+              step={0.1}
+              decimals={1}
+              signed={false}
+              disabled={!active}
+              onPreview={(grainSize) => previewBasic({ ...settings, grainSize, preset: "custom" })}
+              onInteractionChange={setBasicDragging}
+              onChange={(grainSize) => updateActiveSettings({ grainSize, preset: "custom" })}
+            />
+            <Range
+              label="粗糙度"
+              value={settings.grainRoughness}
+              min={0}
+              max={100}
+              signed={false}
+              disabled={!active}
+              onPreview={(grainRoughness) => previewBasic({ ...settings, grainRoughness, preset: "custom" })}
+              onInteractionChange={setBasicDragging}
+              onChange={(grainRoughness) => updateActiveSettings({ grainRoughness, preset: "custom" })}
+            />
+            <Range
+              label="彩色比例"
+              value={settings.grainColor}
+              min={0}
+              max={100}
+              signed={false}
+              disabled={!active}
+              onPreview={(grainColor) => previewBasic({ ...settings, grainColor, preset: "custom" })}
+              onInteractionChange={setBasicDragging}
+              onChange={(grainColor) => updateActiveSettings({ grainColor, preset: "custom" })}
+            />
+            <Range
+              label="高光响应"
+              value={settings.grainHighlights}
+              min={0}
+              max={100}
+              signed={false}
+              disabled={!active}
+              onPreview={(grainHighlights) => previewBasic({ ...settings, grainHighlights, preset: "custom" })}
+              onInteractionChange={setBasicDragging}
+              onChange={(grainHighlights) => updateActiveSettings({ grainHighlights, preset: "custom" })}
             />
           </section>
           <section className="palette-section">

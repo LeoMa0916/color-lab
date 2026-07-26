@@ -29,6 +29,60 @@ function adjustZone(value, control, weight, lift, lower) {
   return value + value * amount * weight * lower;
 }
 
+function hashNoise(x, y, seed) {
+  let value = Math.imul((x | 0) ^ seed, 0x45d9f3b)
+    ^ Math.imul((y | 0) + seed, 0x27d4eb2d);
+  value = Math.imul(value ^ (value >>> 16), 0x21f0aaad);
+  value ^= value >>> 15;
+  return (value >>> 0) / 4294967295 - 0.5;
+}
+
+function smoothNoise(x, y, cellSize, seed) {
+  const gridX = x / cellSize;
+  const gridY = y / cellSize;
+  const x0 = Math.floor(gridX);
+  const y0 = Math.floor(gridY);
+  const tx = gridX - x0;
+  const ty = gridY - y0;
+  const smoothX = tx * tx * (3 - 2 * tx);
+  const smoothY = ty * ty * (3 - 2 * ty);
+  const top = hashNoise(x0, y0, seed)
+    + (hashNoise(x0 + 1, y0, seed) - hashNoise(x0, y0, seed)) * smoothX;
+  const bottom = hashNoise(x0, y0 + 1, seed)
+    + (hashNoise(x0 + 1, y0 + 1, seed) - hashNoise(x0, y0 + 1, seed)) * smoothX;
+  return top + (bottom - top) * smoothY;
+}
+
+function filmGrainAt(pixel, width, height, light, settings) {
+  const amount = clamp(settings.grain ?? 0, 0, 100);
+  if (!amount) return [0, 0, 0];
+  const x = pixel % width;
+  const y = Math.floor(pixel / width);
+  const densityScale = Math.max(width, height) / 1600;
+  const requestedSize = clamp(settings.grainSize ?? 1, 0.5, 4);
+  const cellSize = Math.max(1, requestedSize * densityScale);
+  const roughness = clamp((settings.grainRoughness ?? 50) / 100);
+  const colorRatio = clamp((settings.grainColor ?? 12) / 100);
+  const highlightResponse = clamp((settings.grainHighlights ?? 25) / 100);
+  const seed = Math.round(settings.grainSeed ?? 1847);
+  const coarse = smoothNoise(x, y, cellSize, seed);
+  const fine = hashNoise(x, y, seed ^ 0x68bc21eb);
+  const luminanceNoise = coarse * (1 - roughness * 0.58) + fine * roughness * 0.72;
+  const shadowWeight = 0.82 + (1 - light) * 0.36;
+  const highlightFade = 1 - smoothstep(0.58, 0.98, light) * (1 - highlightResponse);
+  const amplitude = amount * 2.15 * shadowWeight * highlightFade;
+  const base = luminanceNoise * amplitude;
+  const redNoise = smoothNoise(x, y, cellSize, seed ^ 0x1f123bb5)
+    * amplitude * colorRatio;
+  const blueNoise = smoothNoise(x, y, cellSize, seed ^ 0x5f356495)
+    * amplitude * colorRatio;
+  return [
+    base + redNoise,
+    base - (redNoise + blueNoise) * 0.28,
+    base + blueNoise,
+  ];
+}
+
 function adjustedLuminance(value, settings) {
   const exposure = clamp(settings.exposure ?? 0, -3, 3);
   let result = linearToSrgb(clamp(srgbToLinear(value) * (2 ** exposure)));
@@ -160,7 +214,6 @@ export function applyBasicAdjustments(data, width, height, settings) {
     const saturationFactor = 1 + clamp((settings.saturation ?? 0) / 100, -1, 1);
     const contrast = clamp(settings.contrast ?? 0, -100, 100);
     const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
-    const grain = clamp(settings.grain ?? 0, 0, 100);
     const dehaze = clamp((settings.dehaze ?? 0) / 100, -1, 1);
     const dehazeColorFactor = 1 + dehaze * 0.14;
     for (let index = 0; index < data.length; index += 4) {
@@ -181,22 +234,22 @@ export function applyBasicAdjustments(data, width, height, settings) {
         * dehazeColorFactor
         * saturationFactor;
       const currentLuminance = luminance(red, green, blue) * 255;
-      let hash = (index / 4) ^ 0x9e3779b9;
-      hash = Math.imul(hash ^ (hash >>> 16), 0x21f0aaad);
-      hash = Math.imul(hash ^ (hash >>> 15), 0x735a2d97);
-      hash ^= hash >>> 15;
-      const grainWeight = 0.35 + 0.65
-        * (1 - Math.abs(currentLuminance - 128) / 128);
-      const noise = (((hash >>> 0) / 4294967295) - 0.5) * grain * 2 * grainWeight;
+      const grain = filmGrainAt(
+        index / 4,
+        width,
+        height,
+        clamp(currentLuminance / 255),
+        settings,
+      );
       data[index] = contrastFactor
         * (currentLuminance + (red - currentLuminance) * colorFactor - 128)
-        + 128 + noise;
+        + 128 + grain[0];
       data[index + 1] = contrastFactor
         * (currentLuminance + (green - currentLuminance) * colorFactor - 128)
-        + 128 + noise;
+        + 128 + grain[1];
       data[index + 2] = contrastFactor
         * (currentLuminance + (blue - currentLuminance) * colorFactor - 128)
-        + 128 + noise;
+        + 128 + grain[2];
     }
   }
 

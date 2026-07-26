@@ -754,6 +754,60 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   font-variant-numeric: tabular-nums;
 }
 
+.texture-spectrum {
+  display: grid;
+  grid-template-columns: 1fr 52px;
+  gap: 7px 10px;
+  margin: 0 0 10px;
+  padding: 8px 9px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 10px;
+  background: rgba(10, 13, 17, .58);
+}
+
+.texture-spectrum > div:first-child {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  color: #b8bdc6;
+  font-size: 8px;
+}
+
+.texture-spectrum small { color: #737b86; font-size: 7px; }
+
+.texture-bars {
+  height: 28px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  align-items: end;
+  gap: 3px;
+}
+
+.texture-bars i {
+  height: 100%;
+  display: flex;
+  align-items: end;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, .045);
+}
+
+.texture-bars b {
+  width: 100%;
+  min-height: 2px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #a6bbff, #6177c9);
+}
+
+.texture-spectrum p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #767e89;
+  font-size: 7px;
+}
+
+.texture-spectrum p span { margin: 0 3px; color: #515863; }
+
 .raw-mode-label {
   position: absolute;
   right: 18px;

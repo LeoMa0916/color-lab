@@ -13,7 +13,8 @@
     "verify:curve": "node scripts/verify-curve.mjs",
     "verify:lighting": "node scripts/verify-lighting.mjs",
     "verify:lut": "node scripts/verify-lut.mjs",
-    "verify:semantic": "node scripts/verify-semantic.mjs"
+    "verify:semantic": "node scripts/verify-semantic.mjs",
+    "verify:texture": "node scripts/verify-texture.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.22-rc.20250304",

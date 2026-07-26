@@ -7,6 +7,7 @@ import {
   normalizeFrameLighting,
   normalizeRgbForLighting,
 } from "./lightingEngine.js";
+import { analyzeTextureSpectrum } from "./textureEngine.js";
 
 export const HUE_BANDS = [
   { id: "red", label: "红", anchor: 25, color: "#ff5b62" },
@@ -252,47 +253,7 @@ function finalizeColorCell(cell, totalSamples) {
 }
 
 function analyzeTexture(data, width, height) {
-  if (!width || !height || width * height * 4 > data.length) return null;
-  const stride = Math.max(1, Math.floor(Math.max(width, height) / 720));
-  const differenceCounts = Array(256).fill(0);
-  let differenceSum = 0;
-  let laplacianSum = 0;
-  let count = 0;
-  const lumaAt = (x, y) => {
-    const index = (y * width + x) * 4;
-    return data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722;
-  };
-  for (let y = stride; y < height - stride; y += stride) {
-    for (let x = stride; x < width - stride; x += stride) {
-      const center = lumaAt(x, y);
-      const right = lumaAt(x + stride, y);
-      const bottom = lumaAt(x, y + stride);
-      const difference = (Math.abs(center - right) + Math.abs(center - bottom)) * 0.5;
-      const laplacian = 4 * center
-        - lumaAt(x - stride, y)
-        - right
-        - lumaAt(x, y - stride)
-        - bottom;
-      differenceSum += difference;
-      laplacianSum += laplacian * laplacian;
-      differenceCounts[Math.min(255, Math.round(difference))] += 1;
-      count += 1;
-    }
-  }
-  let cumulative = 0;
-  let edgeP95 = 0;
-  for (let value = 0; value < 256; value += 1) {
-    cumulative += differenceCounts[value];
-    if (cumulative >= count * 0.95) {
-      edgeP95 = value / 255;
-      break;
-    }
-  }
-  return {
-    microContrast: differenceSum / Math.max(count, 1) / 255,
-    edgeP95,
-    acutance: Math.sqrt(laplacianSum / Math.max(count, 1)) / 255,
-  };
+  return analyzeTextureSpectrum(data, width, height);
 }
 
 function analyzeSemanticProfiles(data, semanticMasks, maxSamples) {
@@ -606,9 +567,21 @@ export function averageProfiles(items) {
   const textureItems = items.map((item) => item.texture).filter(Boolean);
   const texture = textureItems.length
     ? {
+      version: 2,
       microContrast: robustAverage(textureItems.map((item) => item.microContrast)),
       edgeP95: robustAverage(textureItems.map((item) => item.edgeP95)),
       acutance: robustAverage(textureItems.map((item) => item.acutance)),
+      scales: [1, 2, 4, 8],
+      spectrum: [0, 1, 2, 3].map((index) =>
+        robustAverage(textureItems.map((item) => item.spectrum?.[index] ?? 0))),
+      edgeOvershoot: robustAverage(textureItems.map((item) => item.edgeOvershoot ?? 0)),
+      smear: robustAverage(textureItems.map((item) => item.smear ?? 0)),
+      noise: {
+        luma: [0, 1, 2].map((index) =>
+          robustAverage(textureItems.map((item) => item.noise?.luma?.[index] ?? 0))),
+        color: [0, 1, 2].map((index) =>
+          robustAverage(textureItems.map((item) => item.noise?.color?.[index] ?? 0))),
+      },
     }
     : null;
   const shoulderWidth = Math.max(1, quantiles[9] - quantiles[7]);
