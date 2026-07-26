@@ -6,17 +6,6 @@ function lutIndex(size, red, green, blue) {
   return ((blue * size + green) * size + red) * 3;
 }
 
-function readColor(lut, red, green, blue) {
-  const index = lutIndex(lut.size, red, green, blue);
-  return [lut.data[index], lut.data[index + 1], lut.data[index + 2]];
-}
-
-function addScaled(output, first, second, scale) {
-  output[0] += (second[0] - first[0]) * scale;
-  output[1] += (second[1] - first[1]) * scale;
-  output[2] += (second[2] - first[2]) * scale;
-}
-
 export function createIdentityLut(size = 33) {
   const data = new Float32Array(size ** 3 * 3);
   for (let blue = 0; blue < size; blue += 1) {
@@ -114,49 +103,62 @@ export function enforceLutConstraints(lut) {
 }
 
 export function tetrahedralSample(lut, rgb) {
+  const output = [0, 0, 0];
+  tetrahedralSampleInto(lut, rgb[0], rgb[1], rgb[2], output);
+  return output;
+}
+
+function tetrahedralSampleInto(lut, redInput, greenInput, blueInput, output) {
   const maximum = lut.size - 1;
-  const scaled = rgb.map((value) => clampUnit(value) * maximum);
-  const lower = scaled.map((value) => Math.min(maximum - 1, Math.floor(value)));
-  const fraction = scaled.map((value, channel) => value - lower[channel]);
-  const [red, green, blue] = lower;
-  const [fr, fg, fb] = fraction;
-  const c000 = readColor(lut, red, green, blue);
-  const c100 = readColor(lut, red + 1, green, blue);
-  const c010 = readColor(lut, red, green + 1, blue);
-  const c001 = readColor(lut, red, green, blue + 1);
-  const c110 = readColor(lut, red + 1, green + 1, blue);
-  const c101 = readColor(lut, red + 1, green, blue + 1);
-  const c011 = readColor(lut, red, green + 1, blue + 1);
-  const c111 = readColor(lut, red + 1, green + 1, blue + 1);
-  const output = [...c000];
-  if (fr >= fg) {
-    if (fg >= fb) {
-      addScaled(output, c000, c100, fr);
-      addScaled(output, c100, c110, fg);
-      addScaled(output, c110, c111, fb);
+  const scaledRed = clampUnit(redInput) * maximum;
+  const scaledGreen = clampUnit(greenInput) * maximum;
+  const scaledBlue = clampUnit(blueInput) * maximum;
+  const red = Math.min(maximum - 1, Math.floor(scaledRed));
+  const green = Math.min(maximum - 1, Math.floor(scaledGreen));
+  const blue = Math.min(maximum - 1, Math.floor(scaledBlue));
+  const fr = scaledRed - red;
+  const fg = scaledGreen - green;
+  const fb = scaledBlue - blue;
+  const i000 = lutIndex(lut.size, red, green, blue);
+  const i100 = lutIndex(lut.size, red + 1, green, blue);
+  const i010 = lutIndex(lut.size, red, green + 1, blue);
+  const i001 = lutIndex(lut.size, red, green, blue + 1);
+  const i110 = lutIndex(lut.size, red + 1, green + 1, blue);
+  const i101 = lutIndex(lut.size, red + 1, green, blue + 1);
+  const i011 = lutIndex(lut.size, red, green + 1, blue + 1);
+  const i111 = lutIndex(lut.size, red + 1, green + 1, blue + 1);
+  for (let channel = 0; channel < 3; channel += 1) {
+    const c000 = lut.data[i000 + channel];
+    let value = c000;
+    if (fr >= fg) {
+      if (fg >= fb) {
+        value += (lut.data[i100 + channel] - c000) * fr
+          + (lut.data[i110 + channel] - lut.data[i100 + channel]) * fg
+          + (lut.data[i111 + channel] - lut.data[i110 + channel]) * fb;
+      } else if (fr >= fb) {
+        value += (lut.data[i100 + channel] - c000) * fr
+          + (lut.data[i101 + channel] - lut.data[i100 + channel]) * fb
+          + (lut.data[i111 + channel] - lut.data[i101 + channel]) * fg;
+      } else {
+        value += (lut.data[i001 + channel] - c000) * fb
+          + (lut.data[i101 + channel] - lut.data[i001 + channel]) * fr
+          + (lut.data[i111 + channel] - lut.data[i101 + channel]) * fg;
+      }
     } else if (fr >= fb) {
-      addScaled(output, c000, c100, fr);
-      addScaled(output, c100, c101, fb);
-      addScaled(output, c101, c111, fg);
+      value += (lut.data[i010 + channel] - c000) * fg
+        + (lut.data[i110 + channel] - lut.data[i010 + channel]) * fr
+        + (lut.data[i111 + channel] - lut.data[i110 + channel]) * fb;
+    } else if (fg >= fb) {
+      value += (lut.data[i010 + channel] - c000) * fg
+        + (lut.data[i011 + channel] - lut.data[i010 + channel]) * fb
+        + (lut.data[i111 + channel] - lut.data[i011 + channel]) * fr;
     } else {
-      addScaled(output, c000, c001, fb);
-      addScaled(output, c001, c101, fr);
-      addScaled(output, c101, c111, fg);
+      value += (lut.data[i001 + channel] - c000) * fb
+        + (lut.data[i011 + channel] - lut.data[i001 + channel]) * fg
+        + (lut.data[i111 + channel] - lut.data[i011 + channel]) * fr;
     }
-  } else if (fr >= fb) {
-    addScaled(output, c000, c010, fg);
-    addScaled(output, c010, c110, fr);
-    addScaled(output, c110, c111, fb);
-  } else if (fg >= fb) {
-    addScaled(output, c000, c010, fg);
-    addScaled(output, c010, c011, fb);
-    addScaled(output, c011, c111, fr);
-  } else {
-    addScaled(output, c000, c001, fb);
-    addScaled(output, c001, c011, fg);
-    addScaled(output, c011, c111, fr);
+    output[channel] = clampUnit(value);
   }
-  return output.map(clampUnit);
 }
 
 function maskValue(semanticMasks, region, pixel, width, height) {
@@ -178,17 +180,21 @@ function maskValue(semanticMasks, region, pixel, width, height) {
 
 export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = null) {
   const residualEntries = Object.entries(styleLuts.residuals || {});
+  const mapped = [0, 0, 0];
+  const delta = [0, 0, 0];
   for (let pixel = 0; pixel < width * height; pixel += 1) {
     const index = pixel * 4;
     if (data[index + 3] < 16) continue;
-    const input = [data[index] / 255, data[index + 1] / 255, data[index + 2] / 255];
-    const mapped = tetrahedralSample(styleLuts.global, input);
+    const red = data[index] / 255;
+    const green = data[index + 1] / 255;
+    const blue = data[index + 2] / 255;
+    tetrahedralSampleInto(styleLuts.global, red, green, blue, mapped);
     let totalWeight = 0;
     const residual = [0, 0, 0];
     residualEntries.forEach(([region, lut]) => {
       const weight = clampUnit(maskValue(semanticMasks, region, pixel, width, height));
       if (weight < 0.01) return;
-      const delta = tetrahedralSample(lut, input);
+      tetrahedralSampleInto(lut, red, green, blue, delta);
       residual[0] += (delta[0] - 0.5) * weight;
       residual[1] += (delta[1] - 0.5) * weight;
       residual[2] += (delta[2] - 0.5) * weight;

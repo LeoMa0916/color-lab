@@ -17,7 +17,6 @@ import {
   HUE_BANDS,
   analyzePixels,
   averageProfiles,
-  getHistogram,
   makePalette,
 } from "./colorEngine";
 import { applyBasicAdjustments } from "./basicAdjustments";
@@ -38,10 +37,22 @@ import {
   serializeClstyle,
 } from "./styleStore";
 import { applyTextureMatch } from "./textureEngine";
+import { engineWorker } from "./engineClient";
+import {
+  createRenderPipeline,
+  detectRenderBackend,
+  recommendedPreviewSide,
+} from "./renderBackend";
 
 const IS_MOBILE = typeof navigator !== "undefined"
   && (/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints > 2);
-const MAX_SIDE = IS_MOBILE ? 960 : 1600;
+const RENDER_BACKEND = detectRenderBackend();
+const RENDER_PIPELINE = createRenderPipeline(engineWorker);
+const MAX_SIDE = recommendedPreviewSide(
+  RENDER_BACKEND,
+  typeof navigator !== "undefined" ? navigator.deviceMemory || 4 : 4,
+  IS_MOBILE,
+);
 const CHANNELS = [
   { id: "master", label: "总体", color: "#f5f5f7" },
   { id: "red", label: "红", color: "#ff5d57" },
@@ -319,10 +330,24 @@ async function analyzeUrl(url) {
   const canvas = document.createElement("canvas");
   const context = drawSized(image, canvas, 640);
   const semanticMasks = await analyzeSemanticCanvas(canvas);
-  return analyzePixels(
-    context.getImageData(0, 0, canvas.width, canvas.height).data,
-    { width: canvas.width, height: canvas.height, semanticMasks },
-  );
+  const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  try {
+    return await engineWorker.run(
+      "analyze",
+      {
+        data,
+        options: { width: canvas.width, height: canvas.height, semanticMasks },
+      },
+      { photoId: `analysis:${url}:${performance.now()}:${Math.random()}` },
+    );
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    return analyzePixels(data, {
+      width: canvas.width,
+      height: canvas.height,
+      semanticMasks,
+    });
+  }
 }
 
 function downloadCanvas(canvas, name, onDone) {
@@ -1046,6 +1071,7 @@ export function App() {
   const [channel, setChannel] = useState("master");
   const [displayHistogram, setDisplayHistogram] = useState(null);
   const [processing, setProcessing] = useState(false);
+  const [activeBackend, setActiveBackend] = useState(RENDER_BACKEND.label);
   const [curveDragging, setCurveDragging] = useState(false);
   const [basicDragging, setBasicDragging] = useState(false);
   const [baseRevision, setBaseRevision] = useState(0);
@@ -1119,7 +1145,7 @@ export function App() {
     );
   }
 
-  function getStyleLuts(source, reference, options = {}) {
+  async function getStyleLuts(source, reference, options = {}) {
     const key = JSON.stringify({
       source: source?.tone?.quantiles,
       sourceSemantic: source?.semantic?.confidence,
@@ -1146,17 +1172,29 @@ export function App() {
     });
     if (!styleLutCache.current.has(key)) {
       if (styleLutCache.current.size >= 8) styleLutCache.current.clear();
-      styleLutCache.current.set(
-        key,
-        buildStyleLuts(source, reference, settings, options),
-      );
+      const task = engineWorker.run(
+        "build-luts",
+        { source, reference, settings, options },
+        { photoId: `lut:${active?.id || "style"}:${options.includeAdjustments ? "export" : "preview"}` },
+      ).catch((error) => {
+        if (error?.name === "AbortError") throw error;
+        return buildStyleLuts(source, reference, settings, options);
+      });
+      styleLutCache.current.set(key, task);
     }
-    return styleLutCache.current.get(key);
+    try {
+      const luts = await styleLutCache.current.get(key);
+      styleLutCache.current.set(key, Promise.resolve(luts));
+      return luts;
+    } catch (error) {
+      styleLutCache.current.delete(key);
+      throw error;
+    }
   }
 
-  function createStylePayload(name) {
+  async function createStylePayload(name) {
     const luts = active?.stats && referenceStats
-      ? getStyleLuts(active.stats, referenceStats)
+      ? await getStyleLuts(active.stats, referenceStats)
       : null;
     return {
       id: crypto.randomUUID(),
@@ -1172,7 +1210,7 @@ export function App() {
 
   async function saveReferenceStyle() {
     if (!referenceStats || !styleName.trim()) return;
-    const style = createStylePayload(styleName.trim());
+    const style = await createStylePayload(styleName.trim());
     const replaced = savedStyles.find((item) => item.name === style.name);
     if (replaced) await deleteStyle(replaced.id);
     await saveStyle(style);
@@ -1215,10 +1253,10 @@ export function App() {
     }
   }
 
-  function exportClstyle() {
+  async function exportClstyle() {
     if (!referenceStats) return;
     const name = exportOptions.name.trim() || active?.name.replace(/\.[^.]+$/, "") || "Color Style";
-    const style = createStylePayload(name);
+    const style = await createStylePayload(name);
     saveBlob(
       new Blob([serializeClstyle(style)], { type: "application/json" }),
       `${name}.clstyle`,
@@ -1270,11 +1308,15 @@ export function App() {
       const semanticMasks = await analyzeSemanticCanvas(analysisCanvas);
       const context = source.getContext("2d", { willReadFrequently: true });
       const imageData = context.getImageData(0, 0, source.width, source.height);
-      const sourceProfile = active.stats || analyzePixels(imageData.data, {
-        width: source.width,
-        height: source.height,
-      });
-      const styleLuts = getStyleLuts(
+      const sourceProfile = active.stats || await engineWorker.run(
+        "analyze",
+        {
+          data: new Uint8ClampedArray(imageData.data),
+          options: { width: source.width, height: source.height },
+        },
+        { photoId: `export-analysis:${active.id}` },
+      );
+      const styleLuts = await getStyleLuts(
         sourceProfile,
         referenceStats || sourceProfile,
       );
@@ -1328,7 +1370,7 @@ export function App() {
       if (!active.stats || !referenceStats) return;
       setProcessing(true);
       try {
-        const luts = getStyleLuts(active.stats, referenceStats, {
+        const luts = await getStyleLuts(active.stats, referenceStats, {
           includeAdjustments: true,
         });
         content = cubeFromLut(luts.global, name);
@@ -1507,14 +1549,23 @@ export function App() {
           if (cancelled) return;
           semanticMaskCache.current.set(maskKey, semanticMasks);
         }
-        const fullSource = analyzePixels(data, {
-          width: imageData.width,
-          height: imageData.height,
-          semanticMasks,
-        });
-        const source = active.stats?.semantic ? active.stats : fullSource;
+        let source = active.stats;
+        if (!source) {
+          source = await engineWorker.run(
+            "analyze",
+            {
+              data: new Uint8ClampedArray(data),
+              options: {
+                width: imageData.width,
+                height: imageData.height,
+                semanticMasks,
+              },
+            },
+            { photoId: `analysis:${active.id}` },
+          );
+        }
         const reference = referenceStats || source;
-        const styleLuts = getStyleLuts(source, reference);
+        const styleLuts = await getStyleLuts(source, reference);
         applyStyleLuts(
           data,
           imageData.width,
@@ -1565,15 +1616,7 @@ export function App() {
     const canvas = styledCanvas.current;
     if (!base || !canvas) return;
     let cancelled = false;
-    let histogramTimer = null;
     const frame = requestAnimationFrame(() => {
-      const output = renderAdjustedBase(
-        base,
-        settings,
-        settings.curves,
-        canvas,
-        styledOutput,
-      );
       const previewBase = styledPreviewBase.current;
       if (previewBase) {
         const cached = curveAdjustedPreviewBase.current;
@@ -1593,15 +1636,54 @@ export function App() {
           height: previewBase.height,
         };
       }
+    });
+    RENDER_PIPELINE.renderBasic(
+      {
+        data: new Uint8ClampedArray(base.data),
+        width: base.width,
+        height: base.height,
+        settings,
+        curves: settings.curves,
+      },
+      { photoId: `render:${active?.id || "preview"}` },
+    ).then((result) => {
       if (cancelled) return;
-      histogramTimer = window.setTimeout(() => {
-        if (!cancelled) setDisplayHistogram(getHistogram(output));
-      }, 140);
+      setActiveBackend(
+        result.backend === "webgpu"
+          ? "WebGPU"
+          : result.backend === "webgl2"
+            ? "WebGL 2"
+            : "Worker CPU",
+      );
+      styledOutput.current = result.data;
+      if (canvas.width !== result.width) canvas.width = result.width;
+      if (canvas.height !== result.height) canvas.height = result.height;
+      canvas.getContext("2d").putImageData(
+        new ImageData(result.data, result.width, result.height),
+        0,
+        0,
+      );
+      setDisplayHistogram(result.histogram);
+    }).catch((error) => {
+      if (cancelled || error?.name === "AbortError") return;
+      const output = renderAdjustedBase(
+        base,
+        settings,
+        settings.curves,
+        canvas,
+        styledOutput,
+      );
+      engineWorker.run(
+        "histogram",
+        { data: new Uint8ClampedArray(output) },
+        { photoId: `histogram:${active?.id || "preview"}` },
+      ).then((histogram) => {
+        if (!cancelled) setDisplayHistogram(histogram);
+      }).catch(() => {});
     });
     return () => {
       cancelled = true;
       cancelAnimationFrame(frame);
-      if (histogramTimer !== null) window.clearTimeout(histogramTimer);
     };
   }, [
     baseRevision,
@@ -1635,7 +1717,7 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 3</small></div>
+        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 4</small></div>
         <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
         <div className="header-actions">
           <GlassButton className="demo-button" onClick={loadDemo}><Sparkle size={15} />加载示例</GlassButton>
@@ -1757,12 +1839,12 @@ export function App() {
               <span>风格强度</span>
               <small className={processing || curveDragging || basicDragging ? "engine-status active" : "engine-status"}>
                 {processing
-                  ? "正在进行三代精细匹配…"
+                  ? "正在构建 V4 颜色与质感…"
                   : curveDragging
                     ? "曲线实时预览"
                     : basicDragging
                       ? "基本参数实时预览"
-                      : "三代感知匹配"}
+                      : `${activeBackend} · V4 本地渲染`}
               </small>
               <strong>{settings.strength}%</strong>
             </div>
