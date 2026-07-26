@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { applyBasicAdjustments } from "../src/basicAdjustments.js";
 import { analyzePixels } from "../src/colorEngine.js";
-import { applyTextureMatch } from "../src/textureEngine.js";
+import { rgbaToBmpBuffer } from "../src/exportEncoding.js";
+import {
+  applyTextureMatch,
+  applyTextureMatchTiled,
+} from "../src/textureEngine.js";
 
 const width = 96;
 const height = 64;
@@ -36,6 +40,42 @@ assert.ok(
     < spectrumDistance(sourceProfile.texture.spectrum, referenceProfile.texture.spectrum),
   "multi-scale texture matching should approach the reference spectrum",
 );
+
+const directMatch = new Uint8ClampedArray(source);
+const tiledMatch = new Uint8ClampedArray(source);
+applyTextureMatch(directMatch, width, height, sourceProfile, referenceProfile, 1);
+applyTextureMatchTiled(
+  tiledMatch,
+  width,
+  height,
+  sourceProfile,
+  referenceProfile,
+  1,
+  { tileSize: 32, directPixelLimit: 1 },
+);
+let maximumTileDifference = 0;
+for (let index = 0; index < directMatch.length; index += 1) {
+  maximumTileDifference = Math.max(
+    maximumTileDifference,
+    Math.abs(directMatch[index] - tiledMatch[index]),
+  );
+}
+assert.ok(
+  maximumTileDifference <= 1,
+  `tiled texture rendering must not create seams (${maximumTileDifference})`,
+);
+
+const bmp = rgbaToBmpBuffer(
+  new Uint8ClampedArray([
+    255, 0, 0, 255,
+    0, 255, 0, 255,
+  ]),
+  2,
+  1,
+);
+const bmpView = new DataView(bmp);
+assert.equal(bmpView.getUint16(0, true), 0x4d42, "BMP signature must be valid");
+assert.equal(bmp.byteLength, 62, "BMP byte length must match its dimensions");
 
 const grainSettings = {
   temperature: 0,
@@ -96,5 +136,6 @@ console.log("Texture and film grain verification passed", {
   sourceSpectrum: sourceProfile.texture.spectrum.map((value) => Number(value.toFixed(4))),
   matchedSpectrum: matchedProfile.texture.spectrum.map((value) => Number(value.toFixed(4))),
   referenceSpectrum: referenceProfile.texture.spectrum.map((value) => Number(value.toFixed(4))),
+  maximumTileDifference,
   resolutionSamples: { previewSample, exportSample },
 });

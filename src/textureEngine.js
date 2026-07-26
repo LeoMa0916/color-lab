@@ -121,7 +121,15 @@ export function analyzeTextureSpectrum(data, width, height) {
   };
 }
 
-export function applyTextureMatch(data, width, height, source, reference, strength = 1) {
+export function applyTextureMatch(
+  data,
+  width,
+  height,
+  source,
+  reference,
+  strength = 1,
+  options = {},
+) {
   const sourceTexture = source?.texture;
   const referenceTexture = reference?.texture;
   if (!sourceTexture?.spectrum || !referenceTexture?.spectrum || !width || !height) return data;
@@ -130,7 +138,9 @@ export function applyTextureMatch(data, width, height, source, reference, streng
   for (let pixel = 0; pixel < luma.length; pixel += 1) {
     luma[pixel] = lumaAt(data, pixel * 4);
   }
-  const outputScale = Math.max(width, height) / 1600;
+  const outputScale = options.outputScale ?? Math.max(width, height) / 1600;
+  const originX = options.originX || 0;
+  const originY = options.originY || 0;
   const radii = [1, 2, 4, 8].map((radius) => Math.max(1, Math.round(radius * outputScale)));
   const blurs = radii.map((radius) => boxBlur(luma, width, height, radius));
   const gains = referenceTexture.spectrum.map((value, index) =>
@@ -166,13 +176,82 @@ export function applyTextureMatch(data, width, height, source, reference, streng
     });
     detail = clamp(detail, -haloLimit, haloLimit) * 255;
     const tone = light < 0.3 ? 0 : light > 0.72 ? 2 : 1;
-    const x = pixel % width;
-    const y = Math.floor(pixel / width);
+    const x = pixel % width + originX;
+    const y = Math.floor(pixel / width) + originY;
     const grain = hashNoise(x, y, 0x4ce4b17) * noiseDelta[tone] * 1.7;
     const colorNoise = grain * colorRatio;
     data[index] = clamp(data[index] + detail + grain + colorNoise, 0, 255);
     data[index + 1] = clamp(data[index + 1] + detail + grain - colorNoise * 0.35, 0, 255);
     data[index + 2] = clamp(data[index + 2] + detail + grain - colorNoise * 0.65, 0, 255);
+  }
+  return data;
+}
+
+export function applyTextureMatchTiled(
+  data,
+  width,
+  height,
+  source,
+  reference,
+  strength = 1,
+  options = {},
+) {
+  const pixelCount = width * height;
+  const tileSize = Math.max(32, options.tileSize || 768);
+  const directPixelLimit = options.directPixelLimit || 8000000;
+  if (pixelCount <= directPixelLimit) {
+    applyTextureMatch(data, width, height, source, reference, strength);
+    options.onProgress?.(1);
+    return data;
+  }
+
+  const sourcePixels = new Uint8ClampedArray(data);
+  const outputScale = Math.max(width, height) / 1600;
+  const overlap = Math.max(10, Math.ceil(8 * outputScale) + 2);
+  const columns = Math.ceil(width / tileSize);
+  const rows = Math.ceil(height / tileSize);
+  const tileCount = columns * rows;
+  let completed = 0;
+
+  for (let tileY = 0; tileY < height; tileY += tileSize) {
+    const coreHeight = Math.min(tileSize, height - tileY);
+    const sourceY = Math.max(0, tileY - overlap);
+    const sourceBottom = Math.min(height, tileY + coreHeight + overlap);
+    const tileHeight = sourceBottom - sourceY;
+    for (let tileX = 0; tileX < width; tileX += tileSize) {
+      const coreWidth = Math.min(tileSize, width - tileX);
+      const sourceX = Math.max(0, tileX - overlap);
+      const sourceRight = Math.min(width, tileX + coreWidth + overlap);
+      const tileWidth = sourceRight - sourceX;
+      const tile = new Uint8ClampedArray(tileWidth * tileHeight * 4);
+
+      for (let row = 0; row < tileHeight; row += 1) {
+        const sourceStart = ((sourceY + row) * width + sourceX) * 4;
+        tile.set(
+          sourcePixels.subarray(sourceStart, sourceStart + tileWidth * 4),
+          row * tileWidth * 4,
+        );
+      }
+
+      applyTextureMatch(tile, tileWidth, tileHeight, source, reference, strength, {
+        outputScale,
+        originX: sourceX,
+        originY: sourceY,
+      });
+
+      const coreOffsetX = tileX - sourceX;
+      const coreOffsetY = tileY - sourceY;
+      for (let row = 0; row < coreHeight; row += 1) {
+        const tileStart = ((coreOffsetY + row) * tileWidth + coreOffsetX) * 4;
+        const outputStart = ((tileY + row) * width + tileX) * 4;
+        data.set(
+          tile.subarray(tileStart, tileStart + coreWidth * 4),
+          outputStart,
+        );
+      }
+      completed += 1;
+      options.onProgress?.(completed / tileCount);
+    }
   }
   return data;
 }

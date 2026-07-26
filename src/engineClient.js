@@ -16,8 +16,12 @@ class EngineWorkerClient {
   handleMessage(message) {
     const pending = this.pending.get(message.id);
     if (!pending) return;
-    this.pending.delete(message.id);
     const currentRevision = this.revisions.get(message.photoId);
+    if (message.progress) {
+      if (currentRevision === message.revision) pending.onProgress?.(message.progress);
+      return;
+    }
+    this.pending.delete(message.id);
     if (message.cancelled || currentRevision !== message.revision) {
       pending.reject(new DOMException("任务已由新修订替代", "AbortError"));
     } else if (message.error) {
@@ -27,14 +31,14 @@ class EngineWorkerClient {
     }
   }
 
-  run(type, payload, { photoId = "global", transfer = [] } = {}) {
+  run(type, payload, { photoId = "global", transfer = [], onProgress } = {}) {
     if (!this.worker) return Promise.reject(new Error("Worker 不可用"));
     const revision = (this.revisions.get(photoId) || 0) + 1;
     this.revisions.set(photoId, revision);
     this.worker.postMessage({ type: "cancel", photoId, revision });
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, photoId, revision });
+      this.pending.set(id, { resolve, reject, photoId, revision, onProgress });
       this.worker.postMessage({ id, photoId, revision, type, payload }, transfer);
     });
   }

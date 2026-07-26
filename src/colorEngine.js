@@ -653,16 +653,42 @@ function monotoneToneMap(sourceValues, targetValues) {
   });
   if (points[0]?.x !== 0) points.unshift({ x: 0, y: 0 });
   if (points.at(-1)?.x !== 255) points.push({ x: 255, y: 255 });
+  for (let index = 1; index < points.length; index += 1) {
+    points[index].y = Math.max(points[index - 1].y, points[index].y);
+  }
 
+  const widths = points.slice(0, -1).map((point, index) =>
+    Math.max(1, points[index + 1].x - point.x));
   const slopes = points.slice(0, -1).map((point, index) => {
     const next = points[index + 1];
-    return (next.y - point.y) / Math.max(1, next.x - point.x);
+    return (next.y - point.y) / widths[index];
   });
   const tangents = points.map((_, index) => {
     if (index === 0) return slopes[0];
     if (index === points.length - 1) return slopes.at(-1);
-    if (slopes[index - 1] * slopes[index] <= 0) return 0;
-    return (slopes[index - 1] + slopes[index]) / 2;
+    const previousSlope = slopes[index - 1];
+    const nextSlope = slopes[index];
+    if (previousSlope <= 0 || nextSlope <= 0) return 0;
+    const previousWidth = widths[index - 1];
+    const nextWidth = widths[index];
+    const previousWeight = 2 * nextWidth + previousWidth;
+    const nextWeight = nextWidth + 2 * previousWidth;
+    return (previousWeight + nextWeight)
+      / (previousWeight / previousSlope + nextWeight / nextSlope);
+  });
+  slopes.forEach((slope, index) => {
+    if (slope <= 0) {
+      tangents[index] = 0;
+      tangents[index + 1] = 0;
+      return;
+    }
+    const alpha = tangents[index] / slope;
+    const beta = tangents[index + 1] / slope;
+    const magnitude = Math.hypot(alpha, beta);
+    if (magnitude <= 3) return;
+    const scale = 3 / magnitude;
+    tangents[index] = scale * alpha * slope;
+    tangents[index + 1] = scale * beta * slope;
   });
 
   return (x) => {
@@ -699,7 +725,7 @@ export function createToneLut(source, reference, strength = 1) {
   return lut;
 }
 
-function createToneLutV3(source, reference, strength) {
+export function createToneLutV3(source, reference, strength) {
   const sourceValues = source?.tone?.quantiles;
   const targetValues = reference?.tone?.quantiles;
   if (!sourceValues || !targetValues) {
@@ -714,7 +740,12 @@ function createToneLutV3(source, reference, strength) {
     const endpointProtection = 0.35 + 0.65
       * smoothstep(0.012, 0.07, input)
       * (1 - smoothstep(0.93, 0.995, input));
-    const adjusted = input + (mapped - input) * strength * endpointProtection;
+    const maximumShift = 0.13 + endpointProtection * 0.07;
+    const guardedMapped = input + Math.max(
+      -maximumShift,
+      Math.min(maximumShift, mapped - input),
+    );
+    const adjusted = input + (guardedMapped - input) * strength * endpointProtection;
     previous = Math.max(previous, clampUnit(adjusted));
     lut[value] = previous;
   }

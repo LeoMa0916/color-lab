@@ -66,6 +66,20 @@ applyStyleLuts(
 );
 assert.ok(Math.abs(pixels[0] - 73) <= 1 && Math.abs(pixels[2] - 211) <= 1);
 
+const collapsed = createIdentityLut(17);
+collapsed.data.fill(0.45);
+const protectedWhite = new Uint8ClampedArray([255, 255, 255, 255]);
+applyStyleLuts(
+  protectedWhite,
+  1,
+  1,
+  { global: collapsed, residuals: {} },
+);
+assert.ok(
+  protectedWhite[0] >= 224 && protectedWhite[1] >= 224 && protectedWhite[2] >= 224,
+  "last-resort tone protection must prevent a LUT from collapsing white",
+);
+
 const styleText = serializeClstyle({
   id: "test-style",
   name: "Test",

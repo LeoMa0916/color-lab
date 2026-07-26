@@ -80,6 +80,30 @@ assert.ok(
 );
 assert.ok(copy[2] / copy[0] > preserve[2] / preserve[0], "100 should move toward cool reference");
 
+const darkCaptureLighting = {
+  exposureEV: -0.75,
+  whitePoint: [1, 1, 1],
+  confidence: 0.8,
+};
+const brightCapturedSample = [220, 210, 200];
+const normalizedHighlight = normalizeRgbForLighting(
+  brightCapturedSample,
+  darkCaptureLighting,
+  0.5,
+  0.5,
+);
+const restoredHighlight = applySceneLighting(
+  normalizedHighlight,
+  darkCaptureLighting,
+  0.5,
+  0.5,
+);
+assert.ok(
+  restoredHighlight.every((value, channel) =>
+    brightCapturedSample[channel] - value < 24),
+  "encoded-light normalization must not collapse highlights from a dark capture",
+);
+
 const neutral = makeScene([1, 1, 1], 1);
 const outlier = makeScene([1.25, 0.92, 0.7], 0.36);
 const weights = lightingProfileWeights([

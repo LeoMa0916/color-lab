@@ -2,6 +2,41 @@ function clampUnit(value) {
   return Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
 }
 
+const REGIONAL_RESIDUAL_LIMITS = {
+  skin: 0.065,
+  sky: 0.11,
+  foliage: 0.1,
+  neutral: 0.055,
+};
+
+const REGIONAL_OPACITY = {
+  skin: 0.58,
+  sky: 0.72,
+  foliage: 0.7,
+  neutral: 0.52,
+};
+
+function luminance(red, green, blue) {
+  return red * 0.2126 + green * 0.7152 + blue * 0.0722;
+}
+
+function protectToneRange(red, green, blue, mapped) {
+  const inputLight = luminance(red, green, blue);
+  const mappedLight = luminance(mapped[0], mapped[1], mapped[2]);
+  const midtoneWeight = Math.max(0, 1 - Math.abs(inputLight - 0.5) * 2);
+  const maximumShift = 0.115 + midtoneWeight * 0.105;
+  const limitedShift = Math.max(
+    -maximumShift,
+    Math.min(maximumShift, mappedLight - inputLight),
+  );
+  const correction = inputLight + limitedShift - mappedLight;
+  return [
+    clampUnit(mapped[0] + correction),
+    clampUnit(mapped[1] + correction),
+    clampUnit(mapped[2] + correction),
+  ];
+}
+
 function lutIndex(size, red, green, blue) {
   return ((blue * size + green) * size + red) * 3;
 }
@@ -194,9 +229,10 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
     const blue = data[index + 2] / 255;
     tetrahedralSampleInto(styleLuts.global, red, green, blue, mapped);
     if (!hasResiduals) {
-      data[index] = mapped[0] * 255;
-      data[index + 1] = mapped[1] * 255;
-      data[index + 2] = mapped[2] * 255;
+      const protectedColor = protectToneRange(red, green, blue, mapped);
+      data[index] = protectedColor[0] * 255;
+      data[index + 1] = protectedColor[1] * 255;
+      data[index + 2] = protectedColor[2] * 255;
       continue;
     }
     let totalWeight = 0;
@@ -205,18 +241,25 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
     residual[2] = 0;
     for (let entry = 0; entry < residualEntries.length; entry += 1) {
       const [region, lut] = residualEntries[entry];
-      const weight = clampUnit(maskValue(semanticMasks, region, pixel, width, height));
+      const weight = clampUnit(maskValue(semanticMasks, region, pixel, width, height))
+        * (REGIONAL_OPACITY[region] ?? 0.65);
       if (weight < 0.01) continue;
       tetrahedralSampleInto(lut, red, green, blue, delta);
-      residual[0] += (delta[0] - 0.5) * weight;
-      residual[1] += (delta[1] - 0.5) * weight;
-      residual[2] += (delta[2] - 0.5) * weight;
+      const limit = REGIONAL_RESIDUAL_LIMITS[region] ?? 0.08;
+      residual[0] += Math.max(-limit, Math.min(limit, delta[0] - 0.5)) * weight;
+      residual[1] += Math.max(-limit, Math.min(limit, delta[1] - 0.5)) * weight;
+      residual[2] += Math.max(-limit, Math.min(limit, delta[2] - 0.5)) * weight;
       totalWeight += weight;
     }
     const normalization = totalWeight > 1 ? 1 / totalWeight : 1;
-    data[index] = clampUnit(mapped[0] + residual[0] * normalization) * 255;
-    data[index + 1] = clampUnit(mapped[1] + residual[1] * normalization) * 255;
-    data[index + 2] = clampUnit(mapped[2] + residual[2] * normalization) * 255;
+    const protectedColor = protectToneRange(red, green, blue, [
+      mapped[0] + residual[0] * normalization,
+      mapped[1] + residual[1] * normalization,
+      mapped[2] + residual[2] * normalization,
+    ]);
+    data[index] = protectedColor[0] * 255;
+    data[index + 1] = protectedColor[1] * 255;
+    data[index + 2] = protectedColor[2] * 255;
   }
   return data;
 }

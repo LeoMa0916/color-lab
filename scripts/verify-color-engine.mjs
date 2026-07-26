@@ -1,6 +1,7 @@
 import {
   analyzePixels,
   applyStyleProfile,
+  createToneLutV3,
 } from "../src/colorEngine.js";
 
 function makeImage(transform) {
@@ -131,6 +132,20 @@ const neutralSettings = {
   saturation: 0,
   grain: 0,
 };
+
+const aggressiveToneLut = createToneLutV3(
+  { tone: { quantiles: [0, 12, 28, 55, 96, 144, 190, 225, 246, 255] } },
+  { tone: { quantiles: [0, 4, 10, 19, 30, 45, 64, 83, 102, 120] } },
+  1,
+);
+for (let index = 1; index < aggressiveToneLut.length; index += 1) {
+  if (aggressiveToneLut[index] + 1e-7 < aggressiveToneLut[index - 1]) {
+    throw new Error(`Tone LUT is not monotonic at ${index}`);
+  }
+}
+if (aggressiveToneLut.at(-1) < 0.93) {
+  throw new Error(`Tone LUT collapsed the white point: ${aggressiveToneLut.at(-1)}`);
+}
 
 applyStyleProfile(
   resultData,

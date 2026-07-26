@@ -1264,6 +1264,105 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 }
 .preset-export .glass-button { min-height: 33px; padding: 0 10px; font-size: 10px; }
 
+.global-progress {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background:
+    radial-gradient(circle at 50% 44%, rgba(84, 126, 255, .12), transparent 36%),
+    rgba(4, 5, 8, .52);
+  backdrop-filter: blur(18px) saturate(125%);
+}
+
+.global-progress-card {
+  width: min(470px, calc(100vw - 32px));
+  min-height: 126px;
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 16px;
+  padding: 22px;
+  border-radius: 25px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .46);
+}
+
+.progress-orbit {
+  --progress: 10deg;
+  position: relative;
+  width: 60px;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgba(21, 25, 34, .96) 52%, transparent 54%),
+    conic-gradient(#87a8ff var(--progress), rgba(255, 255, 255, .1) 0);
+  color: #b9cbff;
+  filter: drop-shadow(0 0 18px rgba(103, 145, 255, .3));
+}
+
+.progress-orbit::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: inherit;
+  animation: progress-breathe 1.8s ease-in-out infinite;
+}
+
+.global-progress-card > div:nth-child(2) {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.global-progress-card strong {
+  overflow: hidden;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-progress-card span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.global-progress-card > b {
+  color: #b9cbff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.global-progress-track {
+  height: 4px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .09);
+}
+
+.global-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #668dff, #b5c7ff);
+  box-shadow: 0 0 12px rgba(107, 147, 255, .6);
+  transition: width .22s ease;
+}
+
+@keyframes progress-breathe {
+  0%, 100% { opacity: .35; transform: scale(.98); }
+  50% { opacity: .9; transform: scale(1.08); }
+}
+
 .import-errors {
   position: fixed;
   right: 18px;

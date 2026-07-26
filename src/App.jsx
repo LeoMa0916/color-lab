@@ -100,6 +100,7 @@ const DEFAULT_CURVES = {
   blue: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
 };
 const CURVE_PREVIEW_MAX_SIDE = 720;
+const ANALYSIS_MAX_SIDE = IS_MOBILE ? 288 : 384;
 const RAW_EXTENSIONS = new Set([
   "3fr", "ari", "arw", "bay", "braw", "cap", "cr2", "cr3", "crw", "dcr",
   "dcs", "dng", "drf", "eip", "erf", "fff", "gpr", "iiq", "k25", "kdc",
@@ -261,6 +262,25 @@ function drawSized(image, canvas, maxSide = MAX_SIDE) {
   return context;
 }
 
+function makeAnalysisCanvas(source, maxSide = ANALYSIS_MAX_SIDE) {
+  const sourceWidth = source.naturalWidth || source.width;
+  const sourceHeight = source.naturalHeight || source.height;
+  const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+function waitForPaint() {
+  return new Promise((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
 function makeCurvePreviewBase(base) {
   const longestSide = Math.max(base.width, base.height);
   if (longestSide <= CURVE_PREVIEW_MAX_SIDE) return base;
@@ -328,8 +348,8 @@ function renderCurveBase(base, curves, canvas, outputRef) {
 
 async function analyzeUrl(url) {
   const image = await loadImage(url);
-  const canvas = document.createElement("canvas");
-  const context = drawSized(image, canvas, 640);
+  const canvas = makeAnalysisCanvas(image);
+  const context = canvas.getContext("2d", { willReadFrequently: true });
   const semanticMasks = await analyzeSemanticCanvas(canvas);
   const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
   try {
@@ -374,35 +394,6 @@ function saveBlob(blob, filename) {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(anchor.href), 1800);
-}
-
-function canvasToBmp(canvas) {
-  const { width, height } = canvas;
-  const pixels = canvas.getContext("2d").getImageData(0, 0, width, height).data;
-  const headerSize = 54;
-  const rowSize = width * 4;
-  const buffer = new ArrayBuffer(headerSize + rowSize * height);
-  const view = new DataView(buffer);
-  view.setUint16(0, 0x4d42, true);
-  view.setUint32(2, buffer.byteLength, true);
-  view.setUint32(10, headerSize, true);
-  view.setUint32(14, 40, true);
-  view.setInt32(18, width, true);
-  view.setInt32(22, height, true);
-  view.setUint16(26, 1, true);
-  view.setUint16(28, 32, true);
-  view.setUint32(34, rowSize * height, true);
-  let offset = headerSize;
-  for (let y = height - 1; y >= 0; y -= 1) {
-    for (let x = 0; x < width; x += 1) {
-      const source = (y * width + x) * 4;
-      view.setUint8(offset++, pixels[source + 2]);
-      view.setUint8(offset++, pixels[source + 1]);
-      view.setUint8(offset++, pixels[source]);
-      view.setUint8(offset++, pixels[source + 3]);
-    }
-  }
-  return new Blob([buffer], { type: "image/bmp" });
 }
 
 function xmpPreset(settings, name) {
@@ -1090,6 +1081,8 @@ export function App() {
   const [channel, setChannel] = useState("master");
   const [displayHistogram, setDisplayHistogram] = useState(null);
   const [processing, setProcessing] = useState(false);
+  const [busyTask, setBusyTask] = useState(null);
+  const [isExporting, setIsExporting] = useState(false);
   const [activeBackend, setActiveBackend] = useState(RENDER_BACKEND.label);
   const [curveDragging, setCurveDragging] = useState(false);
   const [basicDragging, setBasicDragging] = useState(false);
@@ -1141,8 +1134,14 @@ export function App() {
     const selected = [...files].slice(0, limit);
     const decoded = [];
     const errors = [];
-    for (const file of selected) {
+    for (let fileIndex = 0; fileIndex < selected.length; fileIndex += 1) {
+      const file = selected[fileIndex];
       try {
+        setBusyTask((task) => task ? {
+          ...task,
+          label: isRawFile(file) ? `正在解码 RAW · ${file.name}` : `正在读取 · ${file.name}`,
+          progress: Math.round((fileIndex / Math.max(1, selected.length)) * 20),
+        } : task);
         setDecodeStatus(isRawFile(file) ? `正在解码 RAW · ${file.name}` : `正在读取 · ${file.name}`);
         const asset = await fileToAsset(file);
         decoded.push({ file, asset });
@@ -1283,14 +1282,25 @@ export function App() {
   }
 
   async function exportImage() {
-    if (!active) return;
+    if (!active || isExporting) return;
     const longEdge = {
       original: Number.POSITIVE_INFINITY,
       "4k": 3840,
       "2k": 2560,
       "1080p": 1920,
     }[exportOptions.resolution];
+    const filename = exportOptions.name.trim() || "diaoseshi-export";
+    const mime = {
+      jpeg: "image/jpeg",
+      png: "image/png",
+      webp: "image/webp",
+      bmp: "image/bmp",
+    }[exportOptions.format];
+    const extension = exportOptions.format === "jpeg" ? "jpg" : exportOptions.format;
+    setIsExporting(true);
     setProcessing(true);
+    setBusyTask({ kind: "export", label: "正在准备原始图片", progress: 2 });
+    await waitForPaint();
     try {
       let source;
       if (active.raw && active.sourceFile) {
@@ -1313,25 +1323,29 @@ export function App() {
         context.drawImage(image, 0, 0, source.width, source.height);
       }
 
-      const analysisCanvas = document.createElement("canvas");
-      const analysisScale = Math.min(1, 640 / Math.max(source.width, source.height));
-      analysisCanvas.width = Math.max(1, Math.round(source.width * analysisScale));
-      analysisCanvas.height = Math.max(1, Math.round(source.height * analysisScale));
-      analysisCanvas.getContext("2d").drawImage(
-        source,
+      setBusyTask({ kind: "export", label: "正在识别画面区域", progress: 7 });
+      const analysisCanvas = makeAnalysisCanvas(source);
+      const semanticMasks = await analyzeSemanticCanvas(analysisCanvas);
+      setBusyTask({ kind: "export", label: "正在读取完整像素", progress: 9 });
+      await waitForPaint();
+      const context = source.getContext("2d", { willReadFrequently: true });
+      const imageData = context.getImageData(0, 0, source.width, source.height);
+      const analysisContext = analysisCanvas.getContext("2d", { willReadFrequently: true });
+      const analysisData = analysisContext.getImageData(
         0,
         0,
         analysisCanvas.width,
         analysisCanvas.height,
-      );
-      const semanticMasks = await analyzeSemanticCanvas(analysisCanvas);
-      const context = source.getContext("2d", { willReadFrequently: true });
-      const imageData = context.getImageData(0, 0, source.width, source.height);
+      ).data;
       const sourceProfile = active.stats || await engineWorker.run(
         "analyze",
         {
-          data: new Uint8ClampedArray(imageData.data),
-          options: { width: source.width, height: source.height },
+          data: analysisData,
+          options: {
+            width: analysisCanvas.width,
+            height: analysisCanvas.height,
+            semanticMasks,
+          },
         },
         { photoId: `export-analysis:${active.id}` },
       );
@@ -1339,43 +1353,64 @@ export function App() {
         sourceProfile,
         referenceStats || sourceProfile,
       );
-      applyStyleLuts(
-        imageData.data,
-        source.width,
-        source.height,
-        styleLuts,
-        semanticMasks,
+      const rendered = await engineWorker.run(
+        "render-export",
+        {
+          data: imageData.data,
+          width: source.width,
+          height: source.height,
+          styleLuts,
+          semanticMasks,
+          source: sourceProfile,
+          reference: referenceStats || sourceProfile,
+          settings,
+          output: {
+            format: exportOptions.format,
+            mime,
+            extension,
+            quality: exportOptions.quality / 100,
+          },
+        },
+        {
+          photoId: `export-render:${active.id}`,
+          transfer: [imageData.data.buffer],
+          onProgress: (progress) =>
+            setBusyTask({
+              kind: "export",
+              label: progress.label,
+              progress: progress.percent,
+            }),
+        },
       );
-      applyTextureMatch(
-        imageData.data,
-        source.width,
-        source.height,
-        sourceProfile,
-        referenceStats || sourceProfile,
-        settings.strength / 100,
-      );
-      applyBasicAdjustments(imageData.data, source.width, source.height, settings);
-      applyCurveLuts(imageData.data, settings.curves);
-      context.putImageData(imageData, 0, 0);
 
-      const filename = exportOptions.name.trim() || "diaoseshi-export";
-      if (exportOptions.format === "bmp") {
-        saveBlob(canvasToBmp(source), `${filename}.bmp`);
+      if (rendered.blob) {
+        saveBlob(rendered.blob, `${filename}.${rendered.extension}`);
+      } else if (rendered.buffer) {
+        saveBlob(new Blob([rendered.buffer], { type: rendered.mime }), `${filename}.${rendered.extension}`);
       } else {
-        const mime = {
-          jpeg: "image/jpeg",
-          png: "image/png",
-          webp: "image/webp",
-        }[exportOptions.format];
-        const blob = await new Promise((resolve) =>
-          source.toBlob(resolve, mime, exportOptions.quality / 100),
+        const outputCanvas = document.createElement("canvas");
+        outputCanvas.width = rendered.width;
+        outputCanvas.height = rendered.height;
+        outputCanvas.getContext("2d").putImageData(
+          new ImageData(rendered.data, rendered.width, rendered.height),
+          0,
+          0,
         );
-        saveBlob(blob, `${filename}.${exportOptions.format === "jpeg" ? "jpg" : exportOptions.format}`);
+        const blob = await new Promise((resolve) =>
+          outputCanvas.toBlob(resolve, mime, exportOptions.quality / 100),
+        );
+        saveBlob(blob, `${filename}.${extension}`);
       }
       setExportDialogOpen(false);
       setExported(true);
       window.setTimeout(() => setExported(false), 4000);
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        setImportErrors([`导出失败：${error?.message || "浏览器无法完成此次导出"}`]);
+      }
     } finally {
+      setBusyTask(null);
+      setIsExporting(false);
       setProcessing(false);
     }
   }
@@ -1405,6 +1440,7 @@ export function App() {
 
   async function addReferences(files) {
     setAnalyzing(true);
+    setBusyTask({ kind: "analysis", label: "正在读取参考照片", progress: 0 });
     try {
       const decoded = await decodeFiles(files, Math.max(0, 8 - references.length));
       const next = decoded.map(({ file, asset }) => ({
@@ -1415,15 +1451,33 @@ export function App() {
       if (!next.length) return;
       const all = [...references, ...next].slice(0, 8);
       setReferences(all);
-      const stats = await Promise.all(all.map((item) => analyzeUrl(item.url)));
+      let completed = 0;
+      const stats = await Promise.all(all.map(async (item) => {
+        if (item.stats) {
+          completed += 1;
+          return item.stats;
+        }
+        const profile = await analyzeUrl(item.url);
+        completed += 1;
+        setBusyTask({
+          kind: "analysis",
+          label: `正在分析参考照片 ${completed}/${all.length}`,
+          progress: 20 + Math.round(completed / all.length * 76),
+        });
+        return profile;
+      }));
+      const profiled = all.map((item, index) => ({ ...item, stats: stats[index] }));
+      setReferences(profiled);
       setReferenceStats(averageProfiles(stats));
     } finally {
       setAnalyzing(false);
+      setBusyTask(null);
     }
   }
 
   async function addTargets(files) {
     setAnalyzing(true);
+    setBusyTask({ kind: "analysis", label: "正在读取待调色照片", progress: 0 });
     try {
       const decoded = await decodeFiles(files, Math.max(0, 20 - targets.length));
       const next = decoded.map(({ file, asset }) => ({
@@ -1434,17 +1488,29 @@ export function App() {
         stats: null,
       }));
       if (!next.length) return;
-      const stats = await Promise.all(next.map((item) => analyzeUrl(item.url)));
+      let completed = 0;
+      const stats = await Promise.all(next.map(async (item) => {
+        const profile = await analyzeUrl(item.url);
+        completed += 1;
+        setBusyTask({
+          kind: "analysis",
+          label: `正在分析待调色照片 ${completed}/${next.length}`,
+          progress: 20 + Math.round(completed / next.length * 76),
+        });
+        return profile;
+      }));
       const complete = next.map((item, index) => ({ ...item, stats: stats[index] }));
       setTargets((items) => [...items, ...complete].slice(0, 20));
       setActiveId((value) => value || complete[0].id);
     } finally {
       setAnalyzing(false);
+      setBusyTask(null);
     }
   }
 
   async function loadDemo() {
     setAnalyzing(true);
+    setBusyTask({ kind: "analysis", label: "正在分析示例照片", progress: 5 });
     const demoReferences = [
       { id: "demo-ref-coast", name: "海岸金色时刻", url: "/demo/coast-reference.png" },
       { id: "demo-ref-street", name: "暖调街巷", url: "/demo/street-reference.png" },
@@ -1471,12 +1537,13 @@ export function App() {
           curves: structuredClone(DEFAULT_CURVES),
         },
       }));
-      setReferences(demoReferences);
+      setReferences(demoReferences.map((item, index) => ({ ...item, stats: refStats[index] })));
       setReferenceStats(averageProfiles(refStats));
       setTargets(demoTargets);
       setActiveId(demoTargets[0].id);
     } finally {
       setAnalyzing(false);
+      setBusyTask(null);
     }
   }
 
@@ -1487,10 +1554,7 @@ export function App() {
     setReferences(next);
     if (!next.length) setReferenceStats(null);
     else {
-      setAnalyzing(true);
-      Promise.all(next.map((item) => analyzeUrl(item.url)))
-        .then((stats) => setReferenceStats(averageProfiles(stats)))
-        .finally(() => setAnalyzing(false));
+      setReferenceStats(averageProfiles(next.map((item) => item.stats).filter(Boolean)));
     }
   }
 
@@ -1564,7 +1628,9 @@ export function App() {
         const maskKey = `${active.id}:${active.url}:${imageData.width}x${imageData.height}`;
         let semanticMasks = semanticMaskCache.current.get(maskKey);
         if (!semanticMasks) {
-          semanticMasks = await analyzeSemanticCanvas(originalCanvas.current);
+          semanticMasks = await analyzeSemanticCanvas(
+            makeAnalysisCanvas(originalCanvas.current),
+          );
           if (cancelled) return;
           semanticMaskCache.current.set(maskKey, semanticMasks);
         }
@@ -1743,7 +1809,7 @@ export function App() {
           <GlassButton className="icon-button" onClick={resetActive} title="重置当前照片"><ArrowCounterClockwise size={18} /></GlassButton>
           <button
             className="primary-button"
-            disabled={!active}
+            disabled={!active || isExporting}
             onClick={() => {
               setExportOptions((value) => ({
                 ...value,
@@ -1755,6 +1821,31 @@ export function App() {
         </div>
       </header>
       {exported && <div className="toast glass-surface" role="status"><Check size={16} weight="bold" />已导出当前照片</div>}
+
+      {busyTask && (
+        <div className="global-progress" role="status" aria-live="polite">
+          <div className="global-progress-card glass-panel">
+            <div
+              className="progress-orbit"
+              style={{ "--progress": `${Math.max(2, busyTask.progress || 0) * 3.6}deg` }}
+            >
+              <Sparkle size={22} weight="fill" />
+            </div>
+            <div>
+              <strong>{busyTask.label}</strong>
+              <span>
+                {busyTask.kind === "export"
+                  ? "完整分辨率处理在后台进行，页面仍可保持响应"
+                  : "照片仅在浏览器本地分析，不会上传服务器"}
+              </span>
+              <div className="global-progress-track">
+                <i style={{ width: `${Math.max(2, busyTask.progress || 0)}%` }} />
+              </div>
+            </div>
+            <b>{Math.round(busyTask.progress || 0)}%</b>
+          </div>
+        </div>
+      )}
 
       <section className="workspace">
         <aside className="left-panel glass-panel">
@@ -2022,9 +2113,11 @@ export function App() {
         </div>
       )}
       {exportDialogOpen && active && (
-        <div className="modal-backdrop" onMouseDown={() => setExportDialogOpen(false)}>
+        <div className="modal-backdrop" onMouseDown={() => {
+          if (!isExporting) setExportDialogOpen(false);
+        }}>
           <section className="modal export-modal glass-panel" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-title"><div><DownloadSimple size={18} /><h2>导出</h2></div><GlassButton className="mini-button" onClick={() => setExportDialogOpen(false)}><X size={14} /></GlassButton></div>
+            <div className="modal-title"><div><DownloadSimple size={18} /><h2>导出</h2></div><GlassButton className="mini-button" disabled={isExporting} onClick={() => setExportDialogOpen(false)}><X size={14} /></GlassButton></div>
             <div className="export-grid">
               <label className="field-label full">文件名称<input value={exportOptions.name} onChange={(event) => setExportOptions({ ...exportOptions, name: event.target.value })} /></label>
               <label className="field-label">像素大小<select value={exportOptions.resolution} onChange={(event) => setExportOptions({ ...exportOptions, resolution: event.target.value })}><option value="original">原始完整尺寸</option><option value="4k">4K · 最长边 3840</option><option value="2k">2K · 最长边 2560</option><option value="1080p">1080p · 最长边 1920</option></select></label>
@@ -2039,7 +2132,7 @@ export function App() {
                 <GlassButton onClick={() => exportPreset("cube")}>导出 33³ CUBE</GlassButton>
               </div>
             </div>
-            <div className="dialog-actions"><GlassButton onClick={() => setExportDialogOpen(false)}>取消</GlassButton><button className="primary-button" onClick={exportImage}>导出图片</button></div>
+            <div className="dialog-actions"><GlassButton disabled={isExporting} onClick={() => setExportDialogOpen(false)}>取消</GlassButton><button className="primary-button" disabled={isExporting} onClick={exportImage}>{isExporting ? "正在导出…" : "导出图片"}</button></div>
           </section>
         </div>
       )}

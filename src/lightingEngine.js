@@ -1,4 +1,5 @@
 const GRID_SIZE = 8;
+const SRGB_EXPOSURE_GAMMA = 2.2;
 
 function clamp(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, value));
@@ -26,6 +27,10 @@ function median(values, fallback = 0) {
 function normalizeWhitePoint(channels) {
   const average = (channels[0] + channels[1] + channels[2]) / 3 || 1;
   return channels.map((channel) => clamp(channel / average, 0.72, 1.32));
+}
+
+function encodedExposure(exposureEV) {
+  return 2 ** (clamp(exposureEV || 0, -2.5, 2.5) / SRGB_EXPOSURE_GAMMA);
 }
 
 function makeCell() {
@@ -164,7 +169,7 @@ function sampleLighting(lighting, x = 0.5, y = 0.5) {
 export function normalizeRgbForLighting(rgb, lighting, x, y) {
   if (!lighting) return [...rgb];
   const local = sampleLighting(lighting, x, y);
-  const exposure = 2 ** clamp(local.exposureEV || 0, -2.5, 2.5);
+  const exposure = encodedExposure(local.exposureEV);
   const whitePoint = local.whitePoint || [1, 1, 1];
   return rgb.map((value, channel) =>
     clamp(value / Math.max(0.55, whitePoint[channel]) / exposure, 0, 255));
@@ -199,7 +204,7 @@ export function blendSceneLighting(source, reference, amount = 0.35) {
 export function applySceneLighting(rgb, lighting, x, y) {
   if (!lighting) return [...rgb];
   const local = sampleLighting(lighting, x, y);
-  const exposure = 2 ** clamp(local.exposureEV || 0, -2.5, 2.5);
+  const exposure = encodedExposure(local.exposureEV);
   const whitePoint = local.whitePoint || [1, 1, 1];
   return rgb.map((value, channel) =>
     clamp(value * whitePoint[channel] * exposure, 0, 255));
