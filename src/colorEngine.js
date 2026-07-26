@@ -164,6 +164,31 @@ function emptyHueBand(band) {
   };
 }
 
+function emptyNeutralZone(zone) {
+  return {
+    id: zone.id,
+    label: zone.label,
+    weight: 0,
+    a: 0,
+    b: 0,
+    coverage: 0,
+  };
+}
+
+function emptyColorCell(zone, band) {
+  return {
+    zone: zone.id,
+    id: band.id,
+    weight: 0,
+    hue: band.anchor,
+    chroma: 0,
+    lightness: 0,
+    coverage: 0,
+    sin: 0,
+    cos: 0,
+  };
+}
+
 function finalizeZone(zone) {
   const weight = Math.max(zone.weight, 0.00001);
   const lightness = zone.lightness / weight;
@@ -193,7 +218,77 @@ function finalizeHueBand(band, totalSamples) {
   };
 }
 
-export function analyzePixels(data, maxSamples = 180000) {
+function finalizeNeutralZone(zone, totalSamples) {
+  const weight = Math.max(zone.weight, 0.00001);
+  return {
+    ...zone,
+    a: zone.a / weight,
+    b: zone.b / weight,
+    coverage: zone.weight / Math.max(totalSamples, 1),
+  };
+}
+
+function finalizeColorCell(cell, totalSamples) {
+  const weight = Math.max(cell.weight, 0.00001);
+  return {
+    ...cell,
+    hue: cell.weight
+      ? (Math.atan2(cell.sin / weight, cell.cos / weight) * 180 / Math.PI + 360) % 360
+      : cell.hue,
+    chroma: cell.chroma / weight,
+    lightness: cell.weight ? cell.lightness / weight : 0.5,
+    coverage: cell.weight / Math.max(totalSamples, 1),
+  };
+}
+
+function analyzeTexture(data, width, height) {
+  if (!width || !height || width * height * 4 > data.length) return null;
+  const stride = Math.max(1, Math.floor(Math.max(width, height) / 720));
+  const differenceCounts = Array(256).fill(0);
+  let differenceSum = 0;
+  let laplacianSum = 0;
+  let count = 0;
+  const lumaAt = (x, y) => {
+    const index = (y * width + x) * 4;
+    return data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722;
+  };
+  for (let y = stride; y < height - stride; y += stride) {
+    for (let x = stride; x < width - stride; x += stride) {
+      const center = lumaAt(x, y);
+      const right = lumaAt(x + stride, y);
+      const bottom = lumaAt(x, y + stride);
+      const difference = (Math.abs(center - right) + Math.abs(center - bottom)) * 0.5;
+      const laplacian = 4 * center
+        - lumaAt(x - stride, y)
+        - right
+        - lumaAt(x, y - stride)
+        - bottom;
+      differenceSum += difference;
+      laplacianSum += laplacian * laplacian;
+      differenceCounts[Math.min(255, Math.round(difference))] += 1;
+      count += 1;
+    }
+  }
+  let cumulative = 0;
+  let edgeP95 = 0;
+  for (let value = 0; value < 256; value += 1) {
+    cumulative += differenceCounts[value];
+    if (cumulative >= count * 0.95) {
+      edgeP95 = value / 255;
+      break;
+    }
+  }
+  return {
+    microContrast: differenceSum / Math.max(count, 1) / 255,
+    edgeP95,
+    acutance: Math.sqrt(laplacianSum / Math.max(count, 1)) / 255,
+  };
+}
+
+export function analyzePixels(data, options = 180000) {
+  const maxSamples = typeof options === "number" ? options : options.maxSamples ?? 180000;
+  const width = typeof options === "number" ? null : options.width;
+  const height = typeof options === "number" ? null : options.height;
   const pixelCount = data.length / 4;
   const sampleStep = Math.max(1, Math.floor(pixelCount / maxSamples));
   const sums = [0, 0, 0];
@@ -201,6 +296,8 @@ export function analyzePixels(data, maxSamples = 180000) {
   const toneCounts = Array(256).fill(0);
   const zones = ZONES.map(emptyZone);
   const colors = HUE_BANDS.map(emptyHueBand);
+  const neutralZones = ZONES.map(emptyNeutralZone);
+  const colorGrid = ZONES.map((zone) => HUE_BANDS.map((band) => emptyColorCell(zone, band)));
   let saturation = 0;
   let sampled = 0;
 
@@ -226,7 +323,8 @@ export function analyzePixels(data, maxSamples = 180000) {
       squares[channel] += rgb[channel] * rgb[channel];
     }
 
-    zoneWeights(safeLightness).forEach((weight, zoneIndex) => {
+    const tonalWeights = zoneWeights(safeLightness);
+    tonalWeights.forEach((weight, zoneIndex) => {
       const zone = zones[zoneIndex];
       zone.weight += weight;
       zone.lightness += safeLightness * weight;
@@ -235,9 +333,21 @@ export function analyzePixels(data, maxSamples = 180000) {
       zone.chroma += chroma * weight;
     });
 
+    const neutralConfidence = 1 - smoothstep(0.012, 0.055, chroma);
+    if (neutralConfidence > 0.001 && safeLightness > 0.04 && safeLightness < 0.96) {
+      tonalWeights.forEach((toneWeight, zoneIndex) => {
+        const weight = toneWeight * neutralConfidence;
+        const neutral = neutralZones[zoneIndex];
+        neutral.weight += weight;
+        neutral.a += a * weight;
+        neutral.b += b * weight;
+      });
+    }
+
     if (chroma > 0.008 && safeLightness > 0.025 && safeLightness < 0.985) {
       const chromaConfidence = smoothstep(0.008, 0.07, chroma);
-      hueWeights(hue).forEach((baseWeight, colorIndex) => {
+      const chromaticWeights = hueWeights(hue);
+      chromaticWeights.forEach((baseWeight, colorIndex) => {
         const weight = baseWeight * chromaConfidence;
         const color = colors[colorIndex];
         color.weight += weight;
@@ -245,6 +355,17 @@ export function analyzePixels(data, maxSamples = 180000) {
         color.lightness += safeLightness * weight;
         color.sin += Math.sin(hue * Math.PI / 180) * weight;
         color.cos += Math.cos(hue * Math.PI / 180) * weight;
+      });
+      tonalWeights.forEach((toneWeight, zoneIndex) => {
+        chromaticWeights.forEach((hueWeight, colorIndex) => {
+          const weight = toneWeight * hueWeight * chromaConfidence;
+          const cell = colorGrid[zoneIndex][colorIndex];
+          cell.weight += weight;
+          cell.chroma += chroma * weight;
+          cell.lightness += safeLightness * weight;
+          cell.sin += Math.sin(hue * Math.PI / 180) * weight;
+          cell.cos += Math.cos(hue * Math.PI / 180) * weight;
+        });
       });
     }
   }
@@ -257,7 +378,7 @@ export function analyzePixels(data, maxSamples = 180000) {
   );
 
   return {
-    version: 2,
+    version: 3,
     sampleCount: sampled,
     mean,
     std,
@@ -275,6 +396,9 @@ export function analyzePixels(data, maxSamples = 180000) {
     },
     zones: zones.map(finalizeZone),
     colors: colors.map((band) => finalizeHueBand(band, count)),
+    neutralZones: neutralZones.map((zone) => finalizeNeutralZone(zone, count)),
+    colorGrid: colorGrid.map((row) => row.map((cell) => finalizeColorCell(cell, count))),
+    texture: analyzeTexture(data, width, height),
   };
 }
 
@@ -357,8 +481,10 @@ export function averageProfiles(items) {
     histogram[channel] = values.map((value) => value / peak);
   });
 
-  return {
-    version: 2,
+  const isVersion3 = items.every((item) =>
+    item.version >= 3 && item.neutralZones && item.colorGrid);
+  const profile = {
+    version: isVersion3 ? 3 : 2,
     sourceCount: items.length,
     sampleCount: items.reduce((sum, item) => sum + item.sampleCount, 0),
     mean: [0, 1, 2].map((channel) => robustAverage(items.map((item) => item.mean[channel]))),
@@ -377,6 +503,60 @@ export function averageProfiles(items) {
     },
     zones,
     colors,
+  };
+  if (!isVersion3) return profile;
+
+  const neutralZones = ZONES.map((zone, zoneIndex) => {
+    const sourceZones = items.map((item) => item.neutralZones[zoneIndex]);
+    return {
+      id: zone.id,
+      label: zone.label,
+      weight: robustAverage(sourceZones.map((item) => item.weight)),
+      a: robustAverage(sourceZones.map((item) => item.a)),
+      b: robustAverage(sourceZones.map((item) => item.b)),
+      coverage: robustAverage(sourceZones.map((item) => item.coverage)),
+    };
+  });
+  const colorGrid = ZONES.map((zone, zoneIndex) =>
+    HUE_BANDS.map((band, colorIndex) => {
+      const cells = items.map((item) => item.colorGrid[zoneIndex][colorIndex]);
+      return {
+        zone: zone.id,
+        id: band.id,
+        hue: circularAverage(
+          cells.map((cell) => ({
+            hue: cell.hue,
+            weight: Math.max(0.0001, cell.coverage),
+          })),
+          band.anchor,
+        ),
+        chroma: robustAverage(cells.map((cell) => cell.chroma)),
+        lightness: robustAverage(cells.map((cell) => cell.lightness)),
+        coverage: robustAverage(cells.map((cell) => cell.coverage)),
+        weight: robustAverage(cells.map((cell) => cell.weight)),
+      };
+    }));
+  const textureItems = items.map((item) => item.texture).filter(Boolean);
+  const texture = textureItems.length
+    ? {
+      microContrast: robustAverage(textureItems.map((item) => item.microContrast)),
+      edgeP95: robustAverage(textureItems.map((item) => item.edgeP95)),
+      acutance: robustAverage(textureItems.map((item) => item.acutance)),
+    }
+    : null;
+  const shoulderWidth = Math.max(1, quantiles[9] - quantiles[7]);
+  const highlightRolloff = (quantiles[9] - quantiles[8]) / shoulderWidth;
+  return {
+    ...profile,
+    neutralZones,
+    colorGrid,
+    texture,
+    renderIntent: {
+      highlightRolloff,
+      shadowDensity: quantiles[3] / Math.max(1, quantiles[5]),
+      neutralCoolness: -robustAverage(neutralZones.map((zone) => zone.b)),
+      chromaRestraint: 1 - clampUnit(profile.saturation),
+    },
   };
 }
 
@@ -437,6 +617,192 @@ export function createToneLut(source, reference, strength = 1) {
   return lut;
 }
 
+function createToneLutV3(source, reference, strength) {
+  const sourceValues = source?.tone?.quantiles;
+  const targetValues = reference?.tone?.quantiles;
+  if (!sourceValues || !targetValues) {
+    return Float32Array.from({ length: 1024 }, (_, value) => value / 1023);
+  }
+  const map = monotoneToneMap(sourceValues, targetValues);
+  const lut = new Float32Array(1024);
+  let previous = 0;
+  for (let value = 0; value < 1024; value += 1) {
+    const input = value / 1023;
+    const mapped = map(input * 255) / 255;
+    const endpointProtection = 0.35 + 0.65
+      * smoothstep(0.012, 0.07, input)
+      * (1 - smoothstep(0.93, 0.995, input));
+    const adjusted = input + (mapped - input) * strength * endpointProtection;
+    previous = Math.max(previous, clampUnit(adjusted));
+    lut[value] = previous;
+  }
+  return lut;
+}
+
+function buildVersion3Lookups(source, reference) {
+  const toneBins = 64;
+  const hueBins = 72;
+  const neutralA = new Float32Array(toneBins);
+  const neutralB = new Float32Array(toneBins);
+  const zoneA = new Float32Array(toneBins);
+  const zoneB = new Float32Array(toneBins);
+  const hueShift = new Float32Array(toneBins * hueBins);
+  const logChroma = new Float32Array(toneBins * hueBins);
+  const lightnessShift = new Float32Array(toneBins * hueBins);
+
+  const neutralDeltas = source.neutralZones.map((zone, index) => {
+    const target = reference.neutralZones[index];
+    const evidence = Math.min(zone.coverage, target.coverage);
+    return {
+      a: Math.max(-0.035, Math.min(0.035, target.a - zone.a)),
+      b: Math.max(-0.035, Math.min(0.035, target.b - zone.b)),
+      confidence: smoothstep(0.002, 0.06, evidence),
+    };
+  });
+  const zoneDeltas = source.zones.map((zone, index) => ({
+    a: Math.max(-0.055, Math.min(0.055, reference.zones[index].a - zone.a)),
+    b: Math.max(-0.055, Math.min(0.055, reference.zones[index].b - zone.b)),
+  }));
+  const gridDeltas = source.colorGrid.map((row, zoneIndex) =>
+    row.map((cell, colorIndex) => {
+      const target = reference.colorGrid[zoneIndex][colorIndex];
+      const evidence = Math.min(cell.coverage, target.coverage);
+      return {
+        hue: Math.max(-24, Math.min(24, circularDelta(target.hue, cell.hue))),
+        chroma: Math.max(0.65, Math.min(1.55, target.chroma / Math.max(0.014, cell.chroma))),
+        lightness: Math.max(-0.06, Math.min(0.06, target.lightness - cell.lightness)),
+        confidence: smoothstep(0.0002, 0.012, evidence),
+      };
+    }));
+
+  for (let toneIndex = 0; toneIndex < toneBins; toneIndex += 1) {
+    const tone = toneIndex / (toneBins - 1);
+    const tonalWeights = zoneWeights(tone);
+    tonalWeights.forEach((weight, zoneIndex) => {
+      const neutral = neutralDeltas[zoneIndex];
+      neutralA[toneIndex] += neutral.a * neutral.confidence * weight;
+      neutralB[toneIndex] += neutral.b * neutral.confidence * weight;
+      zoneA[toneIndex] += zoneDeltas[zoneIndex].a * weight;
+      zoneB[toneIndex] += zoneDeltas[zoneIndex].b * weight;
+    });
+    for (let hueIndex = 0; hueIndex < hueBins; hueIndex += 1) {
+      const hue = hueIndex / hueBins * 360;
+      const chromaticWeights = hueWeights(hue);
+      let hueTotal = 0;
+      let chromaTotal = 0;
+      let lightnessTotal = 0;
+      let evidence = 0;
+      tonalWeights.forEach((toneWeight, zoneIndex) => {
+        chromaticWeights.forEach((hueWeight, colorIndex) => {
+          const delta = gridDeltas[zoneIndex][colorIndex];
+          const reliableWeight = toneWeight * hueWeight * delta.confidence;
+          hueTotal += delta.hue * reliableWeight;
+          chromaTotal += Math.log(delta.chroma) * reliableWeight;
+          lightnessTotal += delta.lightness * reliableWeight;
+          evidence += reliableWeight;
+        });
+      });
+      const index = toneIndex * hueBins + hueIndex;
+      if (evidence > 0.0001) {
+        hueShift[index] = hueTotal / evidence;
+        logChroma[index] = chromaTotal / evidence;
+        lightnessShift[index] = lightnessTotal / evidence;
+      }
+    }
+  }
+  return {
+    toneBins,
+    hueBins,
+    neutralA,
+    neutralB,
+    zoneA,
+    zoneB,
+    hueShift,
+    logChroma,
+    lightnessShift,
+  };
+}
+
+function oklabToLinearRgb(lightness, a, b) {
+  const lRoot = lightness + 0.3963377774 * a + 0.2158037573 * b;
+  const mRoot = lightness - 0.1055613458 * a - 0.0638541728 * b;
+  const sRoot = lightness - 0.0894841775 * a - 1.291485548 * b;
+  const l = lRoot * lRoot * lRoot;
+  const m = mRoot * mRoot * mRoot;
+  const s = sRoot * sRoot * sRoot;
+  return [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ];
+}
+
+function gamutMappedOklabToRgb(lightness, a, b) {
+  const inGamut = (channels) => channels.every((value) => value >= 0 && value <= 1);
+  if (inGamut(oklabToLinearRgb(lightness, a, b))) {
+    return oklabToRgb(lightness, a, b);
+  }
+  const chroma = Math.hypot(a, b);
+  if (chroma < 0.00001) return oklabToRgb(lightness, 0, 0);
+  const hueA = a / chroma;
+  const hueB = b / chroma;
+  let lower = 0;
+  let upper = chroma;
+  for (let iteration = 0; iteration < 7; iteration += 1) {
+    const middle = (lower + upper) * 0.5;
+    if (inGamut(oklabToLinearRgb(lightness, hueA * middle, hueB * middle))) lower = middle;
+    else upper = middle;
+  }
+  return oklabToRgb(lightness, hueA * lower, hueB * lower);
+}
+
+function applyTextureProfile(data, width, height, source, reference, strength) {
+  if (!width || !height || !source?.texture || !reference?.texture) return;
+  const microRatio = reference.texture.microContrast
+    / Math.max(0.0005, source.texture.microContrast);
+  const edgeRatio = reference.texture.edgeP95 / Math.max(0.001, source.texture.edgeP95);
+  const microAdjustment = Math.max(-0.24, Math.min(0.18, (microRatio - 1) * strength * 0.55));
+  const edgeAdjustment = Math.max(-0.16, Math.min(0.12, (edgeRatio - 1) * strength * 0.25));
+  if (Math.abs(microAdjustment) + Math.abs(edgeAdjustment) < 0.012) return;
+
+  const lightness = new Float32Array(width * height);
+  for (let pixel = 0; pixel < lightness.length; pixel += 1) {
+    const index = pixel * 4;
+    lightness[pixel] = (
+      data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722
+    ) / 255;
+  }
+  const macroRadius = Math.max(2, Math.round(Math.min(width, height) / 420));
+  for (let y = macroRadius; y < height - macroRadius; y += 1) {
+    for (let x = macroRadius; x < width - macroRadius; x += 1) {
+      const pixel = y * width + x;
+      const center = lightness[pixel];
+      const microBlur = (
+        lightness[pixel - 1]
+        + lightness[pixel + 1]
+        + lightness[pixel - width]
+        + lightness[pixel + width]
+      ) * 0.25;
+      const macroBlur = (
+        lightness[pixel - macroRadius]
+        + lightness[pixel + macroRadius]
+        + lightness[pixel - macroRadius * width]
+        + lightness[pixel + macroRadius * width]
+      ) * 0.25;
+      const midtoneWeight = smoothstep(0.03, 0.2, center)
+        * (1 - smoothstep(0.82, 0.98, center));
+      const detail = (
+        (center - microBlur) * microAdjustment
+        + (center - macroBlur) * edgeAdjustment
+      ) * midtoneWeight * 255;
+      const index = pixel * 4;
+      data[index] = clampByte(data[index] + detail);
+      data[index + 1] = clampByte(data[index + 1] + detail);
+      data[index + 2] = clampByte(data[index + 2] + detail);
+    }
+  }
+}
+
 function legacyTransfer(rgb, source, reference, strength) {
   return rgb.map((value, channel) => {
     const transferred = ((value - source.mean[channel]) / Math.max(8, source.std[channel]))
@@ -445,17 +811,33 @@ function legacyTransfer(rgb, source, reference, strength) {
   });
 }
 
-export function applyStyleProfile(data, source, reference, settings, curveLuts) {
+export function applyStyleProfile(
+  data,
+  source,
+  reference,
+  settings,
+  curveLuts,
+  dimensions = null,
+) {
   const strength = clampUnit(settings.strength / 100);
   const advanced = source?.version >= 2 && reference?.version >= 2;
-  const toneLut = createToneLut(source, reference, strength);
-  const zoneDeltas = advanced
+  const version3 = source?.version >= 3
+    && reference?.version >= 3
+    && source.neutralZones
+    && reference.neutralZones
+    && source.colorGrid
+    && reference.colorGrid;
+  const toneLut = version3
+    ? createToneLutV3(source, reference, strength)
+    : createToneLut(source, reference, strength);
+  const version3Lookups = version3 ? buildVersion3Lookups(source, reference) : null;
+  const zoneDeltas = advanced && !version3
     ? source.zones.map((zone, index) => ({
       a: Math.max(-0.075, Math.min(0.075, reference.zones[index].a - zone.a)),
       b: Math.max(-0.075, Math.min(0.075, reference.zones[index].b - zone.b)),
     }))
     : [];
-  const colorDeltas = advanced
+  const colorDeltas = advanced && !version3
     ? source.colors.map((color, index) => {
       const target = reference.colors[index];
       const evidence = Math.min(color.coverage, target.coverage);
@@ -477,7 +859,57 @@ export function applyStyleProfile(data, source, reference, settings, curveLuts) 
     const originalRgb = [data[index], data[index + 1], data[index + 2]];
     let mapped;
 
-    if (advanced) {
+    if (version3) {
+      let [lightness, a, b] = rgbToOklab(...originalRgb);
+      const originalLightness = clampUnit(lightness);
+      const toneIndex = Math.min(
+        version3Lookups.toneBins - 1,
+        Math.round(originalLightness * (version3Lookups.toneBins - 1)),
+      );
+      lightness = toneLut[Math.round(originalLightness * 1023)];
+
+      let chroma = Math.hypot(a, b);
+      let hue = (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
+      const neutralConfidence = 1 - smoothstep(0.018, 0.08, chroma);
+      a += (
+        version3Lookups.neutralA[toneIndex] * neutralConfidence
+        + version3Lookups.zoneA[toneIndex] * 0.18
+      ) * strength;
+      b += (
+        version3Lookups.neutralB[toneIndex] * neutralConfidence
+        + version3Lookups.zoneB[toneIndex] * 0.18
+      ) * strength;
+
+      chroma = Math.hypot(a, b);
+      hue = (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
+      if (chroma > 0.007) {
+        const hueIndex = Math.min(
+          version3Lookups.hueBins - 1,
+          Math.round(hue / 360 * version3Lookups.hueBins)
+            % version3Lookups.hueBins,
+        );
+        const lookupIndex = toneIndex * version3Lookups.hueBins + hueIndex;
+        let hueShift = version3Lookups.hueShift[lookupIndex];
+        let logChroma = version3Lookups.logChroma[lookupIndex];
+        const skinLike = hue >= 20
+          && hue <= 75
+          && originalLightness >= 0.38
+          && originalLightness <= 0.92
+          && chroma >= 0.015
+          && chroma <= 0.2;
+        if (skinLike) {
+          hueShift = Math.max(-12, Math.min(12, hueShift));
+          logChroma = Math.max(Math.log(0.75), Math.min(Math.log(1.3), logChroma));
+        }
+        hue += hueShift * strength * 0.82;
+        chroma *= Math.exp(logChroma * strength * 0.86);
+        lightness += version3Lookups.lightnessShift[lookupIndex] * strength * 0.18;
+        chroma = Math.min(0.36, chroma);
+        a = Math.cos(hue * Math.PI / 180) * chroma;
+        b = Math.sin(hue * Math.PI / 180) * chroma;
+      }
+      mapped = gamutMappedOklabToRgb(clampUnit(lightness), a, b);
+    } else if (advanced) {
       let [lightness, a, b] = rgbToOklab(...originalRgb);
       const originalLightness = clampUnit(lightness);
       lightness = toneLut[Math.round(originalLightness * 255)] / 255;
@@ -534,6 +966,17 @@ export function applyStyleProfile(data, source, reference, settings, curveLuts) 
       const adjusted = clampByte(contrastFactor * (saturated - 128) + 128 + noise);
       data[index + channel] = colorLuts[channel][masterLut[Math.round(adjusted)]];
     }
+  }
+
+  if (version3 && dimensions) {
+    applyTextureProfile(
+      data,
+      dimensions.width,
+      dimensions.height,
+      source,
+      reference,
+      strength,
+    );
   }
 }
 

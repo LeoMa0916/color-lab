@@ -129,14 +129,18 @@ function boxBlur(source, width, height, radius) {
 
 export function applyBasicAdjustments(data, width, height, settings) {
   const hasPixelAdjustments = [
+    "temperature",
     "tint",
     "exposure",
+    "contrast",
     "highlights",
     "shadows",
     "whites",
     "blacks",
     "dehaze",
     "vibrance",
+    "saturation",
+    "grain",
   ].some((key) => settings[key]);
   const texture = clamp((settings.texture ?? 0) / 100, -1, 1);
   const clarity = clamp((settings.clarity ?? 0) / 100, -1, 1);
@@ -148,17 +152,22 @@ export function applyBasicAdjustments(data, width, height, settings) {
       (_, index) => adjustedLuminance(index / 1023, settings),
     );
     const tint = clamp(settings.tint ?? 0, -100, 100);
+    const temperature = clamp(settings.temperature ?? 0, -100, 100);
     const redTint = tint * 0.32;
     const greenTint = tint * -0.42;
     const blueTint = tint * 0.28;
     const vibrance = clamp((settings.vibrance ?? 0) / 100, -1, 1);
+    const saturationFactor = 1 + clamp((settings.saturation ?? 0) / 100, -1, 1);
+    const contrast = clamp(settings.contrast ?? 0, -100, 100);
+    const contrastFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+    const grain = clamp(settings.grain ?? 0, 0, 100);
     const dehaze = clamp((settings.dehaze ?? 0) / 100, -1, 1);
     const dehazeColorFactor = 1 + dehaze * 0.14;
     for (let index = 0; index < data.length; index += 4) {
       if (data[index + 3] < 16) continue;
-      let red = data[index] + redTint;
+      let red = data[index] + redTint + temperature * 0.55;
       let green = data[index + 1] + greenTint;
-      let blue = data[index + 2] + blueTint;
+      let blue = data[index + 2] + blueTint - temperature * 0.55;
       const beforeLuminance = luminance(red, green, blue);
       const toneIndex = Math.round(clamp(beforeLuminance) * 1023);
       const toneDelta = (toneLut[toneIndex] - beforeLuminance) * 255;
@@ -169,11 +178,25 @@ export function applyBasicAdjustments(data, width, height, settings) {
       const minimum = Math.min(red, green, blue);
       const saturation = maximum > 0 ? (maximum - minimum) / maximum : 0;
       const colorFactor = (1 + vibrance * (vibrance > 0 ? 1 - saturation : 0.82) * 0.9)
-        * dehazeColorFactor;
+        * dehazeColorFactor
+        * saturationFactor;
       const currentLuminance = luminance(red, green, blue) * 255;
-      data[index] = currentLuminance + (red - currentLuminance) * colorFactor;
-      data[index + 1] = currentLuminance + (green - currentLuminance) * colorFactor;
-      data[index + 2] = currentLuminance + (blue - currentLuminance) * colorFactor;
+      let hash = (index / 4) ^ 0x9e3779b9;
+      hash = Math.imul(hash ^ (hash >>> 16), 0x21f0aaad);
+      hash = Math.imul(hash ^ (hash >>> 15), 0x735a2d97);
+      hash ^= hash >>> 15;
+      const grainWeight = 0.35 + 0.65
+        * (1 - Math.abs(currentLuminance - 128) / 128);
+      const noise = (((hash >>> 0) / 4294967295) - 0.5) * grain * 2 * grainWeight;
+      data[index] = contrastFactor
+        * (currentLuminance + (red - currentLuminance) * colorFactor - 128)
+        + 128 + noise;
+      data[index + 1] = contrastFactor
+        * (currentLuminance + (green - currentLuminance) * colorFactor - 128)
+        + 128 + noise;
+      data[index + 2] = contrastFactor
+        * (currentLuminance + (blue - currentLuminance) * colorFactor - 128)
+        + 128 + noise;
     }
   }
 

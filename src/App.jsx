@@ -210,6 +210,25 @@ function makeCurvePreviewBase(base) {
   };
 }
 
+function renderAdjustedBase(base, settings, curves, canvas, outputRef) {
+  let output = outputRef.current;
+  if (!output || output.length !== base.data.length) {
+    output = new Uint8ClampedArray(base.data.length);
+    outputRef.current = output;
+  }
+  output.set(base.data);
+  applyBasicAdjustments(output, base.width, base.height, settings);
+  applyCurveLuts(output, curves);
+  if (canvas.width !== base.width) canvas.width = base.width;
+  if (canvas.height !== base.height) canvas.height = base.height;
+  canvas.getContext("2d").putImageData(
+    new ImageData(output, base.width, base.height),
+    0,
+    0,
+  );
+  return output;
+}
+
 function renderCurveBase(base, curves, canvas, outputRef) {
   let output = outputRef.current;
   if (!output || output.length !== base.data.length) {
@@ -232,7 +251,10 @@ async function analyzeUrl(url) {
   const image = await loadImage(url);
   const canvas = document.createElement("canvas");
   const context = drawSized(image, canvas, 640);
-  return analyzePixels(context.getImageData(0, 0, canvas.width, canvas.height).data);
+  return analyzePixels(
+    context.getImageData(0, 0, canvas.width, canvas.height).data,
+    { width: canvas.width, height: canvas.height },
+  );
 }
 
 function downloadCanvas(canvas, name, onDone) {
@@ -610,26 +632,142 @@ function Range({
   min,
   max,
   onChange,
+  onPreview,
+  onInteractionChange,
   signed = true,
   step = 1,
   decimals = 0,
   disabled = false,
 }) {
-  const displayValue = decimals ? Number(value).toFixed(decimals) : value;
+  const [liveValue, setLiveValue] = useState(value);
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState("");
+  const liveValueRef = useRef(value);
+  const draggingRef = useRef(false);
+  const previewFrame = useRef(null);
+
+  useEffect(() => {
+    if (draggingRef.current || editing) return;
+    liveValueRef.current = value;
+    setLiveValue(value);
+  }, [editing, value]);
+
+  useEffect(() => () => {
+    if (previewFrame.current !== null) cancelAnimationFrame(previewFrame.current);
+  }, []);
+
+  function normalize(raw) {
+    const clamped = clamp(Number(raw), min, max);
+    const snapped = min + Math.round((clamped - min) / step) * step;
+    return Number(snapped.toFixed(Math.max(decimals, 4)));
+  }
+
+  function format(raw) {
+    const formatted = decimals ? Number(raw).toFixed(decimals) : Math.round(raw);
+    return `${signed && raw > 0 ? "+" : ""}${formatted}`;
+  }
+
+  function queuePreview(next) {
+    if (!onPreview) return;
+    if (previewFrame.current !== null) cancelAnimationFrame(previewFrame.current);
+    previewFrame.current = requestAnimationFrame(() => {
+      previewFrame.current = null;
+      onPreview(next);
+    });
+  }
+
+  function commit(raw) {
+    const next = normalize(raw);
+    if (previewFrame.current !== null) cancelAnimationFrame(previewFrame.current);
+    previewFrame.current = null;
+    liveValueRef.current = next;
+    setLiveValue(next);
+    onPreview?.(next);
+    onChange(next);
+  }
+
+  function handleSliderChange(event) {
+    const next = normalize(event.target.value);
+    liveValueRef.current = next;
+    setLiveValue(next);
+    if (draggingRef.current) queuePreview(next);
+    else commit(next);
+  }
+
+  function finishPointer() {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    commit(liveValueRef.current);
+    onInteractionChange?.(false);
+  }
+
+  function beginEditing(event) {
+    if (disabled) return;
+    event.preventDefault();
+    setEditValue(String(liveValueRef.current));
+    setEditing(true);
+  }
+
+  function commitEditing() {
+    if (!editing) return;
+    const parsed = Number(editValue);
+    setEditing(false);
+    if (Number.isFinite(parsed)) commit(parsed);
+  }
+
   return (
-    <label className="range-row">
+    <div className="range-row">
       <span>{label}</span>
-      <output>{signed && value > 0 ? "+" : ""}{displayValue}</output>
+      {editing ? (
+        <input
+          className="range-number-input"
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={editValue}
+          aria-label={`输入${label}数值`}
+          autoFocus
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={(event) => setEditValue(event.target.value)}
+          onBlur={commitEditing}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
+            if (event.key === "Escape") {
+              setEditing(false);
+              setEditValue("");
+            }
+          }}
+        />
+      ) : (
+        <output
+          title="双击输入数值"
+          tabIndex={disabled ? -1 : 0}
+          onDoubleClick={beginEditing}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") beginEditing(event);
+          }}
+        >
+          {format(liveValue)}
+        </output>
+      )}
       <input
         type="range"
         min={min}
         max={max}
         step={step}
-        value={value}
+        value={liveValue}
         disabled={disabled}
-        onChange={(event) => onChange(Number(event.target.value))}
+        aria-label={label}
+        onPointerDown={() => {
+          draggingRef.current = true;
+          onInteractionChange?.(true);
+        }}
+        onPointerUp={finishPointer}
+        onPointerCancel={finishPointer}
+        onChange={handleSliderChange}
       />
-    </label>
+    </div>
   );
 }
 
@@ -669,7 +807,13 @@ const BASIC_GROUPS = [
   },
 ];
 
-function BasicAdjustmentsPanel({ settings, disabled, onChange }) {
+function BasicAdjustmentsPanel({
+  settings,
+  disabled,
+  onChange,
+  onPreview,
+  onInteractionChange,
+}) {
   const [open, setOpen] = useState(false);
   return (
     <section className="inspector-section basic-section">
@@ -694,6 +838,12 @@ function BasicAdjustmentsPanel({ settings, disabled, onChange }) {
                   {...control}
                   value={settings[control.key] ?? 0}
                   disabled={disabled}
+                  onInteractionChange={onInteractionChange}
+                  onPreview={(value) => onPreview?.({
+                    ...settings,
+                    [control.key]: value,
+                    preset: "custom",
+                  })}
                   onChange={(value) => onChange({
                     [control.key]: value,
                     preset: "custom",
@@ -713,7 +863,7 @@ function StyleAnalysis({ profile }) {
     return (
       <section className="inspector-section style-analysis muted-analysis">
         <div className="section-title"><h2>风格 DNA</h2><span>等待样片</span></div>
-        <p>上传参考图后分析影调、三段色偏和七色色域。</p>
+        <p>上传参考图后分析影调、中性色、21 分区色彩与自然质感。</p>
       </section>
     );
   }
@@ -734,8 +884,13 @@ function StyleAnalysis({ profile }) {
     <section className="inspector-section style-analysis">
       <div className="section-title">
         <h2>风格 DNA</h2>
-        <span className="analysis-version">感知分析 v2</span>
+        <span className="analysis-version">
+          {profile.version >= 3 ? "分区感知 v3" : "感知分析 v2"}
+        </span>
       </div>
+      {profile.version >= 3 && (
+        <p className="profile-intent">中性色独立校准 · 21 色域分区 · 自然质感匹配</p>
+      )}
       <div className="tone-metrics" aria-label="影调分析">
         {toneMetrics.map(([label, value]) => (
           <div key={label}><span>{label}</span><strong>{Math.round(value)}</strong></div>
@@ -784,6 +939,7 @@ export function App() {
   const [displayHistogram, setDisplayHistogram] = useState(null);
   const [processing, setProcessing] = useState(false);
   const [curveDragging, setCurveDragging] = useState(false);
+  const [basicDragging, setBasicDragging] = useState(false);
   const [baseRevision, setBaseRevision] = useState(0);
   const [exported, setExported] = useState(false);
   const [importErrors, setImportErrors] = useState([]);
@@ -804,6 +960,7 @@ export function App() {
   const styledCanvas = useRef(null);
   const styledBase = useRef(null);
   const styledPreviewBase = useRef(null);
+  const curveAdjustedPreviewBase = useRef(null);
   const styledOutput = useRef(null);
   const curvePreviewOutput = useRef(null);
   const referenceInput = useRef(null);
@@ -874,11 +1031,14 @@ export function App() {
   async function exportImage() {
     if (!active || !styledCanvas.current) return;
     const source = styledCanvas.current;
-    if (
-      styledBase.current
-      && (source.width !== styledBase.current.width || source.height !== styledBase.current.height)
-    ) {
-      renderCurveBase(styledBase.current, settings.curves, source, styledOutput);
+    if (styledBase.current) {
+      renderAdjustedBase(
+        styledBase.current,
+        settings,
+        settings.curves,
+        source,
+        styledOutput,
+      );
     }
     const longEdge = {
       original: Math.max(source.width, source.height),
@@ -1043,12 +1203,27 @@ export function App() {
   }
 
   function previewCurve(points) {
+    const base = curveAdjustedPreviewBase.current;
+    const canvas = styledCanvas.current;
+    if (!canvas) return;
+    const curves = { ...settings.curves, [channel]: points };
+    if (base) renderCurveBase(base, curves, canvas, curvePreviewOutput);
+    else {
+      const fallback = styledPreviewBase.current || styledBase.current;
+      if (fallback) {
+        renderAdjustedBase(fallback, settings, curves, canvas, curvePreviewOutput);
+      }
+    }
+  }
+
+  function previewBasic(previewSettings) {
     const base = styledPreviewBase.current || styledBase.current;
     const canvas = styledCanvas.current;
     if (!base || !canvas) return;
-    renderCurveBase(
+    renderAdjustedBase(
       base,
-      { ...settings.curves, [channel]: points },
+      previewSettings,
+      settings.curves,
       canvas,
       curvePreviewOutput,
     );
@@ -1065,16 +1240,25 @@ export function App() {
         const styledContext = drawSized(image, styledCanvas.current);
         const imageData = originalContext.getImageData(0, 0, originalCanvas.current.width, originalCanvas.current.height);
         const data = imageData.data;
-        const source = active.stats || analyzePixels(data);
+        const source = active.stats || analyzePixels(data, {
+          width: imageData.width,
+          height: imageData.height,
+        });
         const reference = referenceStats || source;
         applyStyleProfile(
           data,
           source,
           reference,
-          settings,
+          {
+            strength: settings.strength,
+            temperature: 0,
+            contrast: 0,
+            saturation: 0,
+            grain: 0,
+          },
           [IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT],
+          { width: imageData.width, height: imageData.height },
         );
-        applyBasicAdjustments(data, imageData.width, imageData.height, settings);
         if (cancelled) return;
         const base = {
           data: new Uint8ClampedArray(data),
@@ -1083,6 +1267,7 @@ export function App() {
         };
         styledBase.current = base;
         styledPreviewBase.current = makeCurvePreviewBase(base);
+        curveAdjustedPreviewBase.current = null;
         styledOutput.current = null;
         curvePreviewOutput.current = null;
         styledContext.clearRect(0, 0, imageData.width, imageData.height);
@@ -1101,6 +1286,53 @@ export function App() {
     active?.stats,
     referenceStats,
     settings.strength,
+  ]);
+
+  useEffect(() => {
+    const base = styledBase.current;
+    const canvas = styledCanvas.current;
+    if (!base || !canvas) return;
+    let cancelled = false;
+    let histogramTimer = null;
+    const frame = requestAnimationFrame(() => {
+      const output = renderAdjustedBase(
+        base,
+        settings,
+        settings.curves,
+        canvas,
+        styledOutput,
+      );
+      const previewBase = styledPreviewBase.current;
+      if (previewBase) {
+        const cached = curveAdjustedPreviewBase.current;
+        const previewData = cached?.data.length === previewBase.data.length
+          ? cached.data
+          : new Uint8ClampedArray(previewBase.data.length);
+        previewData.set(previewBase.data);
+        applyBasicAdjustments(
+          previewData,
+          previewBase.width,
+          previewBase.height,
+          settings,
+        );
+        curveAdjustedPreviewBase.current = {
+          data: previewData,
+          width: previewBase.width,
+          height: previewBase.height,
+        };
+      }
+      if (cancelled) return;
+      histogramTimer = window.setTimeout(() => {
+        if (!cancelled) setDisplayHistogram(getHistogram(output));
+      }, 140);
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      if (histogramTimer !== null) window.clearTimeout(histogramTimer);
+    };
+  }, [
+    baseRevision,
     settings.temperature,
     settings.tint,
     settings.exposure,
@@ -1115,32 +1347,8 @@ export function App() {
     settings.vibrance,
     settings.saturation,
     settings.grain,
+    settings.curves,
   ]);
-
-  useEffect(() => {
-    const base = styledBase.current;
-    const canvas = styledCanvas.current;
-    if (!base || !canvas) return;
-    let cancelled = false;
-    let histogramTimer = null;
-    const frame = requestAnimationFrame(() => {
-      const output = renderCurveBase(
-        base,
-        settings.curves,
-        canvas,
-        styledOutput,
-      );
-      if (cancelled) return;
-      histogramTimer = window.setTimeout(() => {
-        if (!cancelled) setDisplayHistogram(getHistogram(output));
-      }, 140);
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(frame);
-      if (histogramTimer !== null) window.clearTimeout(histogramTimer);
-    };
-  }, [baseRevision, settings.curves]);
 
   function updateSplit(event) {
     if (!dragging && event.type === "pointermove") return;
@@ -1151,7 +1359,7 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 2</small></div>
+        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 3</small></div>
         <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
         <div className="header-actions">
           <GlassButton className="demo-button" onClick={loadDemo}><Sparkle size={15} />加载示例</GlassButton>
@@ -1238,8 +1446,14 @@ export function App() {
           <div className="control-dock glass-surface">
             <div className="strength-control">
               <span>风格强度</span>
-              <small className={processing || curveDragging ? "engine-status active" : "engine-status"}>
-                {processing ? "正在精细匹配…" : curveDragging ? "曲线实时预览" : "感知匹配"}
+              <small className={processing || curveDragging || basicDragging ? "engine-status active" : "engine-status"}>
+                {processing
+                  ? "正在进行三代精细匹配…"
+                  : curveDragging
+                    ? "曲线实时预览"
+                    : basicDragging
+                      ? "基本参数实时预览"
+                      : "三代感知匹配"}
               </small>
               <strong>{settings.strength}%</strong>
             </div>
@@ -1282,6 +1496,8 @@ export function App() {
             settings={settings}
             disabled={!active}
             onChange={updateActiveSettings}
+            onPreview={previewBasic}
+            onInteractionChange={setBasicDragging}
           />
           <section className="inspector-section curve-section">
             <div className="section-title"><h2>曲线</h2><GlassButton className="reset-curve" onClick={() => updateCurve(structuredClone(DEFAULT_CURVES[channel]))}><ArrowCounterClockwise size={13} />重置</GlassButton></div>
@@ -1313,12 +1529,18 @@ export function App() {
               max={40}
               signed={false}
               disabled={!active}
+              onPreview={(grain) => previewBasic({
+                ...settings,
+                grain,
+                preset: "custom",
+              })}
+              onInteractionChange={setBasicDragging}
               onChange={(grain) => updateActiveSettings({ grain, preset: "custom" })}
             />
           </section>
           <section className="palette-section">
             <div>{palette.map((color) => <span key={color} style={{ background: color }} />)}</div>
-            <p>{referenceStats ? `参考色彩 · ${referenceStats.saturation < 0.35 ? "克制饱和" : "鲜明色彩"} · 三段影调取色` : "上传参考图生成色板"}</p>
+            <p>{referenceStats ? `参考色彩 · ${referenceStats.saturation < 0.35 ? "克制饱和" : "鲜明色彩"} · 21 分区取色` : "上传参考图生成色板"}</p>
           </section>
         </aside>
       </section>
@@ -1333,7 +1555,7 @@ export function App() {
         <div className="modal-backdrop" onMouseDown={() => setStyleDialogOpen(false)}>
           <section className="modal glass-panel" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-title"><div><Sparkle size={18} /><h2>保存参考风格</h2></div><GlassButton className="mini-button" onClick={() => setStyleDialogOpen(false)}><X size={14} /></GlassButton></div>
-            <p>影调分位、暗中亮三段色偏和七色色域档案会保存在这台设备的浏览器中。</p>
+            <p>影调分位、中性色、21 分区色彩和质感档案会保存在这台设备的浏览器中。</p>
             <label className="field-label">滤镜名称<input autoFocus value={styleName} placeholder="例如：加州暖阳" onChange={(event) => setStyleName(event.target.value)} /></label>
             <div className="dialog-actions"><GlassButton onClick={() => setStyleDialogOpen(false)}>取消</GlassButton><button className="primary-button" disabled={!styleName.trim()} onClick={saveReferenceStyle}>保存滤镜</button></div>
           </section>

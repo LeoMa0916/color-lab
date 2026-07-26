@@ -5,8 +5,10 @@ import {
 } from "../src/basicAdjustments.js";
 
 const zeroSettings = {
+  temperature: 0,
   tint: 0,
   exposure: 0,
+  contrast: 0,
   highlights: 0,
   shadows: 0,
   whites: 0,
@@ -15,11 +17,39 @@ const zeroSettings = {
   clarity: 0,
   dehaze: 0,
   vibrance: 0,
+  saturation: 0,
+  grain: 0,
 };
 
 const identityPixels = new Uint8ClampedArray([24, 68, 112, 255]);
 applyBasicAdjustments(identityPixels, 1, 1, zeroSettings);
 assert.deepEqual([...identityPixels], [24, 68, 112, 255], "Zero settings changed pixels");
+
+const warmed = new Uint8ClampedArray([128, 128, 128, 255]);
+applyBasicAdjustments(warmed, 1, 1, { ...zeroSettings, temperature: 40 });
+assert.ok(warmed[0] > warmed[2] + 35, "Temperature did not warm the image");
+
+const contrasted = new Uint8ClampedArray([96, 96, 96, 255, 160, 160, 160, 255]);
+applyBasicAdjustments(contrasted, 2, 1, { ...zeroSettings, contrast: 50 });
+assert.ok(contrasted[4] - contrasted[0] > 64, "Contrast did not expand tonal separation");
+
+const saturatedDirect = new Uint8ClampedArray([160, 120, 100, 255]);
+applyBasicAdjustments(saturatedDirect, 1, 1, { ...zeroSettings, saturation: 100 });
+assert.ok(
+  Math.max(...saturatedDirect.slice(0, 3)) - Math.min(...saturatedDirect.slice(0, 3)) > 60,
+  "Saturation did not expand channel separation",
+);
+
+const grainFirst = new Uint8ClampedArray(16 * 4).fill(128);
+const grainSecond = new Uint8ClampedArray(grainFirst);
+for (let index = 3; index < grainFirst.length; index += 4) {
+  grainFirst[index] = 255;
+  grainSecond[index] = 255;
+}
+applyBasicAdjustments(grainFirst, 4, 4, { ...zeroSettings, grain: 30 });
+applyBasicAdjustments(grainSecond, 4, 4, { ...zeroSettings, grain: 30 });
+assert.deepEqual(grainFirst, grainSecond, "Grain preview was not deterministic");
+assert.ok(grainFirst.some((value, index) => index % 4 !== 3 && value !== 128), "Grain did not alter pixels");
 
 const exposed = adjustBasicPixel([64, 64, 64], { ...zeroSettings, exposure: 1 });
 assert.ok(exposed[0] > 64, "Positive exposure did not brighten the image");
@@ -76,4 +106,4 @@ assert.ok(clarityPixels[24 * 4] > 148, "Clarity did not enhance broader local co
 const dehazed = adjustBasicPixel([128, 128, 128], { ...zeroSettings, dehaze: 100 });
 assert.ok(dehazed[0] < 128, "Positive dehaze did not deepen the tonal range");
 
-console.log("Basic adjustments verification passed: tone zones, tint, vibrance, texture, clarity, and dehaze.");
+console.log("Basic adjustments verification passed: live tone, color, detail, and deterministic grain controls.");
