@@ -1068,12 +1068,12 @@ export function applyStyleProfile(
     if (data[index + 3] < 16) continue;
     const originalRgb = [data[index], data[index + 1], data[index + 2]];
     const pixel = index / 4;
-    const positionX = dimensions?.width
+    const positionX = dimensions?.samplePosition?.[0] ?? (dimensions?.width
       ? (pixel % dimensions.width) / Math.max(1, dimensions.width - 1)
-      : 0.5;
-    const positionY = dimensions?.width && dimensions?.height
+      : 0.5);
+    const positionY = dimensions?.samplePosition?.[1] ?? (dimensions?.width && dimensions?.height
       ? Math.floor(pixel / dimensions.width) / Math.max(1, dimensions.height - 1)
-      : 0.5;
+      : 0.5);
     const workingRgb = lightingAware
       ? normalizeRgbForLighting(originalRgb, source.lighting, positionX, positionY)
       : originalRgb;

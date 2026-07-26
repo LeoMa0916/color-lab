@@ -12,6 +12,7 @@
     "verify:color-management": "node scripts/verify-color-management.mjs",
     "verify:curve": "node scripts/verify-curve.mjs",
     "verify:lighting": "node scripts/verify-lighting.mjs",
+    "verify:lut": "node scripts/verify-lut.mjs",
     "verify:semantic": "node scripts/verify-semantic.mjs"
   },
   "dependencies": {

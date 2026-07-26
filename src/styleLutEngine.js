@@ -1,0 +1,106 @@
+import { applyBasicAdjustments } from "./basicAdjustments.js";
+import { applyStyleProfile } from "./colorEngine.js";
+import { applyCurveLuts, smoothCurveLut } from "./curveMath.js";
+import {
+  createLutFromRgba,
+  lutToRgbaInput,
+  residualLut,
+  smoothLut,
+} from "./lut3d.js";
+
+const REGIONAL_LUTS = ["skin", "sky", "foliage", "neutral"];
+const IDENTITY = Uint8Array.from({ length: 256 }, (_, value) => value);
+const IDENTITY_CURVES = {
+  master: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+  red: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+  green: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+  blue: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
+};
+
+function renderLut(source, reference, settings, size, region, includeAdjustments) {
+  const data = lutToRgbaInput(size);
+  const pixelCount = size ** 3;
+  let semanticMasks = null;
+  if (region) {
+    semanticMasks = {
+      width: pixelCount,
+      height: 1,
+      masks: { [region]: new Float32Array(pixelCount).fill(1) },
+    };
+  }
+  applyStyleProfile(
+    data,
+    source,
+    reference,
+    {
+      strength: settings.strength,
+      referenceLighting: settings.referenceLighting,
+      temperature: 0,
+      contrast: 0,
+      saturation: 0,
+      grain: 0,
+    },
+    [IDENTITY, IDENTITY, IDENTITY, IDENTITY],
+    {
+      width: pixelCount,
+      height: 1,
+      semanticMasks,
+      samplePosition: [0.5, 0.5],
+    },
+  );
+  if (includeAdjustments) {
+    applyBasicAdjustments(data, pixelCount, 1, {
+      ...settings,
+      texture: 0,
+      clarity: 0,
+      grain: 0,
+    });
+    applyCurveLuts(data, settings.curves || IDENTITY_CURVES);
+  }
+  return smoothLut(createLutFromRgba(data, size), region ? 0.08 : 0.11, 1);
+}
+
+export function buildStyleLuts(
+  source,
+  reference,
+  settings,
+  { includeAdjustments = false } = {},
+) {
+  const global = renderLut(source, reference, settings, 33, null, includeAdjustments);
+  const residuals = {};
+  REGIONAL_LUTS.forEach((region) => {
+    if (
+      !source?.semantic?.regions?.[region]?.profile
+      || !reference?.semantic?.regions?.[region]?.profile
+    ) return;
+    const regional = renderLut(
+      source,
+      reference,
+      settings,
+      17,
+      region,
+      includeAdjustments,
+    );
+    residuals[region] = residualLut(global, regional);
+  });
+  return {
+    version: 4,
+    global,
+    residuals,
+    localRegions: Object.keys(residuals),
+    includesAdjustments: includeAdjustments,
+    limitations: {
+      cube: ["semantic-local-luts", "texture", "grain"],
+    },
+  };
+}
+
+export function curveLutsFromSettings(settings) {
+  const curves = settings.curves || IDENTITY_CURVES;
+  return [
+    smoothCurveLut(curves.master),
+    smoothCurveLut(curves.red),
+    smoothCurveLut(curves.green),
+    smoothCurveLut(curves.blue),
+  ];
+}

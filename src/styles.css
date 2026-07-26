@@ -779,6 +779,12 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   background: rgba(61, 37, 12, .82);
 }
 
+.saved-style-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .muted-analysis p {
   margin: 0;
   color: var(--muted);
@@ -1147,7 +1153,12 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 
 .preset-export strong { font-size: 12px; }
 .preset-export p { margin: 5px 0 0; }
-.preset-export > div:last-child { display: flex; gap: 7px; }
+.preset-export > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
 .preset-export .glass-button { min-height: 33px; padding: 0 10px; font-size: 10px; }
 
 .import-errors {

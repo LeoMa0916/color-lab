@@ -16,12 +16,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   HUE_BANDS,
   analyzePixels,
-  applyStyleProfile,
   averageProfiles,
   getHistogram,
   makePalette,
 } from "./colorEngine";
-import { adjustBasicPixel, applyBasicAdjustments } from "./basicAdjustments";
+import { applyBasicAdjustments } from "./basicAdjustments";
 import { applyCurveLuts, smoothCurveLut as curveLut } from "./curveMath";
 import {
   imageFrameToCanvas,
@@ -29,6 +28,15 @@ import {
   raw16ToRgba8,
 } from "./imageFrame";
 import { analyzeSemanticCanvas } from "./semanticEngine";
+import { applyStyleLuts, cubeFromLut } from "./lut3d";
+import { buildStyleLuts } from "./styleLutEngine";
+import {
+  deleteStyle,
+  deserializeClstyle,
+  loadStyles,
+  saveStyle,
+  serializeClstyle,
+} from "./styleStore";
 
 const IS_MOBILE = typeof navigator !== "undefined"
   && (/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints > 2);
@@ -73,7 +81,6 @@ const DEFAULT_CURVES = {
   green: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
   blue: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
 };
-const IDENTITY_LUT = Uint8Array.from({ length: 256 }, (_, value) => value);
 const CURVE_PREVIEW_MAX_SIDE = 720;
 const RAW_EXTENSIONS = new Set([
   "3fr", "ari", "arw", "bay", "braw", "cap", "cr2", "cr3", "crw", "dcr",
@@ -388,38 +395,6 @@ function xmpPreset(settings, name) {
   </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>`;
-}
-
-function cubePreset(settings, name, size = 17) {
-  const master = curveLut(settings.curves.master);
-  const red = curveLut(settings.curves.red);
-  const green = curveLut(settings.curves.green);
-  const blue = curveLut(settings.curves.blue);
-  const lines = [`TITLE "${name}"`, `LUT_3D_SIZE ${size}`, "DOMAIN_MIN 0.0 0.0 0.0", "DOMAIN_MAX 1.0 1.0 1.0"];
-  for (let b = 0; b < size; b += 1) {
-    for (let g = 0; g < size; g += 1) {
-      for (let r = 0; r < size; r += 1) {
-        const input = [r, g, b].map((value) => Math.round((value / (size - 1)) * 255));
-        const luminance = input[0] * 0.299 + input[1] * 0.587 + input[2] * 0.114;
-        const sat = 1 + settings.saturation / 100;
-        const factor = (259 * (settings.contrast + 255)) / (255 * (259 - settings.contrast));
-        const adjusted = input.map((value, channel) => {
-          let result = luminance + (value - luminance) * sat;
-          result = factor * (result - 128) + 128;
-          if (channel === 0) result += settings.temperature * 0.55;
-          if (channel === 2) result -= settings.temperature * 0.55;
-          return clamp(result);
-        });
-        const refined = adjustBasicPixel(adjusted, settings);
-        lines.push([
-          red[master[Math.round(refined[0])]],
-          green[master[Math.round(refined[1])]],
-          blue[master[Math.round(refined[2])]],
-        ].map((value) => (value / 255).toFixed(6)).join(" "));
-      }
-    }
-  }
-  return lines.join("\n");
 }
 
 function drawArea(context, values, color, width, height, alpha = 0.28) {
@@ -1048,10 +1023,7 @@ export function App() {
   const [baseRevision, setBaseRevision] = useState(0);
   const [exported, setExported] = useState(false);
   const [importErrors, setImportErrors] = useState([]);
-  const [savedStyles, setSavedStyles] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("diaoseshi-styles") || "[]"); }
-    catch { return []; }
-  });
+  const [savedStyles, setSavedStyles] = useState([]);
   const [styleDialogOpen, setStyleDialogOpen] = useState(false);
   const [styleName, setStyleName] = useState("");
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
@@ -1069,12 +1041,28 @@ export function App() {
   const styledOutput = useRef(null);
   const curvePreviewOutput = useRef(null);
   const semanticMaskCache = useRef(new Map());
+  const styleLutCache = useRef(new Map());
   const referenceInput = useRef(null);
   const targetInput = useRef(null);
+  const styleInput = useRef(null);
   const active = targets.find((item) => item.id === activeId) || targets[0] || null;
   const settings = active?.settings || defaultSettings();
   const palette = useMemo(() => makePalette(referenceStats), [referenceStats]);
   const isReady = references.length > 0 && referenceStats && active;
+
+  useEffect(() => {
+    let cancelled = false;
+    loadStyles()
+      .then((styles) => {
+        if (!cancelled) setSavedStyles(styles);
+      })
+      .catch(() => {
+        if (!cancelled) setImportErrors(["无法读取本机滤镜数据库"]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function decodeFiles(files, limit) {
     const selected = [...files].slice(0, limit);
@@ -1103,24 +1091,67 @@ export function App() {
     );
   }
 
-  function persistStyles(next) {
-    setSavedStyles(next);
-    localStorage.setItem("diaoseshi-styles", JSON.stringify(next));
+  function getStyleLuts(source, reference, options = {}) {
+    const key = JSON.stringify({
+      source: source?.tone?.quantiles,
+      sourceSemantic: source?.semantic?.confidence,
+      reference: reference?.tone?.quantiles,
+      referenceSemantic: reference?.semantic?.confidence,
+      strength: settings.strength,
+      referenceLighting: settings.referenceLighting,
+      adjustments: options.includeAdjustments
+        ? {
+          temperature: settings.temperature,
+          tint: settings.tint,
+          exposure: settings.exposure,
+          contrast: settings.contrast,
+          highlights: settings.highlights,
+          shadows: settings.shadows,
+          whites: settings.whites,
+          blacks: settings.blacks,
+          vibrance: settings.vibrance,
+          saturation: settings.saturation,
+          dehaze: settings.dehaze,
+          curves: settings.curves,
+        }
+        : false,
+    });
+    if (!styleLutCache.current.has(key)) {
+      if (styleLutCache.current.size >= 8) styleLutCache.current.clear();
+      styleLutCache.current.set(
+        key,
+        buildStyleLuts(source, reference, settings, options),
+      );
+    }
+    return styleLutCache.current.get(key);
   }
 
-  function saveReferenceStyle() {
+  function createStylePayload(name) {
+    const luts = active?.stats && referenceStats
+      ? getStyleLuts(active.stats, referenceStats)
+      : null;
+    return {
+      id: crypto.randomUUID(),
+      name,
+      formatVersion: 4,
+      stats: { ...referenceStats, version: 4 },
+      luts,
+      settings: active ? settings : null,
+      palette: makePalette(referenceStats),
+      createdAt: Date.now(),
+    };
+  }
+
+  async function saveReferenceStyle() {
     if (!referenceStats || !styleName.trim()) return;
-    const next = [
-      ...savedStyles.filter((item) => item.name !== styleName.trim()),
-      {
-        id: crypto.randomUUID(),
-        name: styleName.trim(),
-        stats: referenceStats,
-        palette: makePalette(referenceStats),
-        createdAt: Date.now(),
-      },
-    ];
-    persistStyles(next);
+    const style = createStylePayload(styleName.trim());
+    const replaced = savedStyles.find((item) => item.name === style.name);
+    if (replaced) await deleteStyle(replaced.id);
+    await saveStyle(style);
+    setSavedStyles([
+      style,
+      ...savedStyles.filter((item) => item.name !== style.name),
+    ]);
     setStyleDialogOpen(false);
     setStyleName("");
   }
@@ -1128,10 +1159,42 @@ export function App() {
   function applySavedStyle(item) {
     setReferenceStats(item.stats);
     setReferences([]);
+    if (item.settings && active) {
+      updateActiveSettings({
+        ...item.settings,
+        curves: item.settings.curves || structuredClone(DEFAULT_CURVES),
+        preset: "custom",
+      });
+    }
   }
 
-  function removeSavedStyle(id) {
-    persistStyles(savedStyles.filter((item) => item.id !== id));
+  async function removeSavedStyle(id) {
+    await deleteStyle(id);
+    setSavedStyles(savedStyles.filter((item) => item.id !== id));
+  }
+
+  async function importStyleFile(file) {
+    try {
+      const style = deserializeClstyle(await file.text());
+      await saveStyle(style);
+      setSavedStyles((items) => [
+        style,
+        ...items.filter((item) => item.id !== style.id && item.name !== style.name),
+      ]);
+      applySavedStyle(style);
+    } catch (error) {
+      setImportErrors([`${file.name}：${error.message || "无法导入风格文件"}`]);
+    }
+  }
+
+  function exportClstyle() {
+    if (!referenceStats) return;
+    const name = exportOptions.name.trim() || active?.name.replace(/\.[^.]+$/, "") || "Color Style";
+    const style = createStylePayload(name);
+    saveBlob(
+      new Blob([serializeClstyle(style)], { type: "application/json" }),
+      `${name}.clstyle`,
+    );
   }
 
   async function exportImage() {
@@ -1183,20 +1246,16 @@ export function App() {
         width: source.width,
         height: source.height,
       });
-      applyStyleProfile(
-        imageData.data,
+      const styleLuts = getStyleLuts(
         sourceProfile,
         referenceStats || sourceProfile,
-        {
-          strength: settings.strength,
-          referenceLighting: settings.referenceLighting,
-          temperature: 0,
-          contrast: 0,
-          saturation: 0,
-          grain: 0,
-        },
-        [IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT],
-        { width: source.width, height: source.height, semanticMasks },
+      );
+      applyStyleLuts(
+        imageData.data,
+        source.width,
+        source.height,
+        styleLuts,
+        semanticMasks,
       );
       applyBasicAdjustments(imageData.data, source.width, source.height, settings);
       applyCurveLuts(imageData.data, settings.curves);
@@ -1224,12 +1283,23 @@ export function App() {
     }
   }
 
-  function exportPreset(type) {
+  async function exportPreset(type) {
     if (!active) return;
     const name = exportOptions.name.trim() || active.name.replace(/\.[^.]+$/, "");
-    const content = type === "xmp"
-      ? xmpPreset(settings, name)
-      : cubePreset(settings, name);
+    let content;
+    if (type === "xmp") content = xmpPreset(settings, name);
+    else {
+      if (!active.stats || !referenceStats) return;
+      setProcessing(true);
+      try {
+        const luts = getStyleLuts(active.stats, referenceStats, {
+          includeAdjustments: true,
+        });
+        content = cubeFromLut(luts.global, name);
+      } finally {
+        setProcessing(false);
+      }
+    }
     saveBlob(
       new Blob([content], { type: type === "xmp" ? "application/rdf+xml" : "text/plain" }),
       `${name}.${type}`,
@@ -1408,23 +1478,13 @@ export function App() {
         });
         const source = active.stats?.semantic ? active.stats : fullSource;
         const reference = referenceStats || source;
-        applyStyleProfile(
+        const styleLuts = getStyleLuts(source, reference);
+        applyStyleLuts(
           data,
-          source,
-          reference,
-          {
-            strength: settings.strength,
-            temperature: 0,
-            contrast: 0,
-            saturation: 0,
-            grain: 0,
-          },
-          [IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT],
-          {
-            width: imageData.width,
-            height: imageData.height,
-            semanticMasks,
-          },
+          imageData.width,
+          imageData.height,
+          styleLuts,
+          semanticMasks,
         );
         if (cancelled) return;
         const base = {
@@ -1574,7 +1634,28 @@ export function App() {
             {analyzing ? (decodeStatus || "正在构建感知色彩档案…") : referenceStats ? "感知风格档案已就绪" : "等待参考图"}
           </div>
           <div className="saved-style-block">
-            <div className="saved-style-heading"><span>我的滤镜</span><GlassButton className="save-style-button" disabled={!referenceStats} onClick={() => setStyleDialogOpen(true)}><Plus size={13} />保存</GlassButton></div>
+            <div className="saved-style-heading">
+              <span>我的滤镜</span>
+              <div>
+                <GlassButton className="save-style-button" onClick={() => styleInput.current?.click()}>
+                  <UploadSimple size={12} />导入
+                </GlassButton>
+                <GlassButton className="save-style-button" disabled={!referenceStats} onClick={() => setStyleDialogOpen(true)}>
+                  <Plus size={13} />保存
+                </GlassButton>
+              </div>
+              <input
+                ref={styleInput}
+                hidden
+                type="file"
+                accept=".clstyle,application/json"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) importStyleFile(file);
+                  event.target.value = "";
+                }}
+              />
+            </div>
             <div className="saved-style-list">
               {savedStyles.map((item) => (
                 <div key={item.id} className="saved-style-row">
@@ -1739,7 +1820,7 @@ export function App() {
         <div className="modal-backdrop" onMouseDown={() => setStyleDialogOpen(false)}>
           <section className="modal glass-panel" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-title"><div><Sparkle size={18} /><h2>保存参考风格</h2></div><GlassButton className="mini-button" onClick={() => setStyleDialogOpen(false)}><X size={14} /></GlassButton></div>
-            <p>影调分位、中性色、21 分区色彩和质感档案会保存在这台设备的浏览器中。</p>
+            <p>V4 全局与局部 LUT、语义区域、光线、质感和参数会写入本机 IndexedDB，不占用 localStorage。</p>
             <label className="field-label">滤镜名称<input autoFocus value={styleName} placeholder="例如：加州暖阳" onChange={(event) => setStyleName(event.target.value)} /></label>
             <div className="dialog-actions"><GlassButton onClick={() => setStyleDialogOpen(false)}>取消</GlassButton><button className="primary-button" disabled={!styleName.trim()} onClick={saveReferenceStyle}>保存滤镜</button></div>
           </section>
@@ -1751,13 +1832,17 @@ export function App() {
             <div className="modal-title"><div><DownloadSimple size={18} /><h2>导出</h2></div><GlassButton className="mini-button" onClick={() => setExportDialogOpen(false)}><X size={14} /></GlassButton></div>
             <div className="export-grid">
               <label className="field-label full">文件名称<input value={exportOptions.name} onChange={(event) => setExportOptions({ ...exportOptions, name: event.target.value })} /></label>
-              <label className="field-label">像素大小<select value={exportOptions.resolution} onChange={(event) => setExportOptions({ ...exportOptions, resolution: event.target.value })}><option value="original">原始预览尺寸</option><option value="4k">4K · 最长边 3840</option><option value="2k">2K · 最长边 2560</option><option value="1080p">1080p · 最长边 1920</option></select></label>
+              <label className="field-label">像素大小<select value={exportOptions.resolution} onChange={(event) => setExportOptions({ ...exportOptions, resolution: event.target.value })}><option value="original">原始完整尺寸</option><option value="4k">4K · 最长边 3840</option><option value="2k">2K · 最长边 2560</option><option value="1080p">1080p · 最长边 1920</option></select></label>
               <label className="field-label">图片格式<select value={exportOptions.format} onChange={(event) => setExportOptions({ ...exportOptions, format: event.target.value })}><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option><option value="bmp">BMP</option></select></label>
               <label className="field-label full">质量 <span>{exportOptions.quality}%</span><input type="range" min="50" max="100" value={exportOptions.quality} disabled={!["jpeg", "webp"].includes(exportOptions.format)} onChange={(event) => setExportOptions({ ...exportOptions, quality: Number(event.target.value) })} /></label>
             </div>
             <div className="preset-export">
-              <div><strong>导出调色预设</strong><p>XMP 会保留完整基本参数；CUBE 适用于 Photoshop 等软件，但不包含纹理、清晰度等局部质感处理。</p></div>
-              <div><GlassButton onClick={() => exportPreset("xmp")}>导出 XMP</GlassButton><GlassButton onClick={() => exportPreset("cube")}>导出 CUBE</GlassButton></div>
+              <div><strong>导出调色预设</strong><p>CLSTYLE 保留完整 V4 风格；33³ CUBE 仅包含全局色彩与曲线，无法写入语义局部 LUT、质感和颗粒。</p></div>
+              <div>
+                <GlassButton onClick={exportClstyle}>导出 CLSTYLE</GlassButton>
+                <GlassButton onClick={() => exportPreset("xmp")}>导出 XMP</GlassButton>
+                <GlassButton onClick={() => exportPreset("cube")}>导出 33³ CUBE</GlassButton>
+              </div>
             </div>
             <div className="dialog-actions"><GlassButton onClick={() => setExportDialogOpen(false)}>取消</GlassButton><button className="primary-button" onClick={exportImage}>导出图片</button></div>
           </section>
