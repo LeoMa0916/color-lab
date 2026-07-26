@@ -33,6 +33,7 @@ const settings = {
   grainHighlights: 25,
   grainSeed: 1847,
 };
+const previewLimitMs = Number(process.env.PERFORMANCE_PREVIEW_LIMIT_MS || 80);
 
 function pixels(width, height) {
   const output = new Uint8ClampedArray(width * height * 4);
@@ -66,7 +67,10 @@ for (let iteration = 0; iteration < 12; iteration += 1) {
 }
 const previewP95 = percentile(previewTimes.slice(2), 0.95);
 const curveP95 = percentile(curveTimes.slice(2), 0.95);
-assert.ok(previewP95 < 80, `720px CPU preview P95 ${previewP95.toFixed(1)}ms exceeds 80ms`);
+assert.ok(
+  previewP95 < previewLimitMs,
+  `720px CPU preview P95 ${previewP95.toFixed(1)}ms exceeds ${previewLimitMs}ms`,
+);
 assert.ok(curveP95 < 16, `curve P95 ${curveP95.toFixed(1)}ms exceeds 16ms`);
 
 const exportWidth = 6000;
@@ -104,6 +108,7 @@ assert.equal(
 
 console.log("Performance verification passed", {
   previewP95: Number(previewP95.toFixed(2)),
+  previewLimitMs,
   curveP95: Number(curveP95.toFixed(2)),
   export24MpMs: Number(exportMs.toFixed(1)),
   mainThreadArchitecture: "worker revision/cancellation",
