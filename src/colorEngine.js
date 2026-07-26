@@ -874,12 +874,40 @@ function buildSemanticLookups(source, reference) {
   });
 }
 
-function strongestSemanticRegion(semanticLookups, semanticMasks, pixel) {
+function strongestSemanticRegion(
+  semanticLookups,
+  semanticMasks,
+  pixel,
+  targetWidth = semanticMasks?.width,
+  targetHeight = semanticMasks?.height,
+) {
   if (!semanticLookups.length || !semanticMasks?.masks) return null;
   let selected = null;
   let bestWeight = 0.16;
   semanticLookups.forEach((entry) => {
-    const maskWeight = semanticMasks.masks[entry.id]?.[pixel] || 0;
+    const mask = semanticMasks.masks[entry.id];
+    let maskPixel = pixel;
+    if (
+      mask
+      && targetWidth
+      && targetHeight
+      && semanticMasks.width
+      && semanticMasks.height
+      && mask.length !== targetWidth * targetHeight
+    ) {
+      const x = pixel % targetWidth;
+      const y = Math.floor(pixel / targetWidth);
+      const sourceX = Math.min(
+        semanticMasks.width - 1,
+        Math.floor(x / targetWidth * semanticMasks.width),
+      );
+      const sourceY = Math.min(
+        semanticMasks.height - 1,
+        Math.floor(y / targetHeight * semanticMasks.height),
+      );
+      maskPixel = sourceY * semanticMasks.width + sourceX;
+    }
+    const maskWeight = mask?.[maskPixel] || 0;
     const priorityBoost = entry.id === "skin" ? 1.18 : entry.id === "person" ? 0.72 : 1;
     const weight = maskWeight * priorityBoost * entry.confidence;
     if (weight > bestWeight) {
@@ -1105,6 +1133,8 @@ export function applyStyleProfile(
         semanticLookups,
         dimensions?.semanticMasks,
         index / 4,
+        dimensions?.width,
+        dimensions?.height,
       );
       if (semantic) {
         const lookup = semantic.lookups;

@@ -754,6 +754,31 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   font-variant-numeric: tabular-nums;
 }
 
+.raw-mode-label {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 8;
+  padding: 6px 9px;
+  border-radius: 999px;
+  color: #d5ecff;
+  font-size: 8px;
+  letter-spacing: .01em;
+}
+
+.raw-mode-label.fallback {
+  color: #ffd69a;
+  border-color: rgba(255, 184, 90, .24);
+}
+
+.raw-badge.fallback {
+  width: auto;
+  padding-inline: 5px;
+  color: #ffd69a;
+  border-color: rgba(255, 184, 90, .3);
+  background: rgba(61, 37, 12, .82);
+}
+
 .muted-analysis p {
   margin: 0;
   color: var(--muted);

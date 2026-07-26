@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "verify:basic": "node scripts/verify-basic-adjustments.mjs",
     "verify:color": "node scripts/verify-color-engine.mjs",
+    "verify:color-management": "node scripts/verify-color-management.mjs",
     "verify:curve": "node scripts/verify-curve.mjs",
     "verify:lighting": "node scripts/verify-lighting.mjs",
     "verify:semantic": "node scripts/verify-semantic.mjs"

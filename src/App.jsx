@@ -23,9 +23,16 @@ import {
 } from "./colorEngine";
 import { adjustBasicPixel, applyBasicAdjustments } from "./basicAdjustments";
 import { applyCurveLuts, smoothCurveLut as curveLut } from "./curveMath";
+import {
+  imageFrameToCanvas,
+  raw16ToPreviewFrame,
+  raw16ToRgba8,
+} from "./imageFrame";
 import { analyzeSemanticCanvas } from "./semanticEngine";
 
-const MAX_SIDE = 1600;
+const IS_MOBILE = typeof navigator !== "undefined"
+  && (/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints > 2);
+const MAX_SIDE = IS_MOBILE ? 960 : 1600;
 const CHANNELS = [
   { id: "master", label: "总体", color: "#f5f5f7" },
   { id: "red", label: "红", color: "#ff5d57" },
@@ -111,67 +118,112 @@ function isRawFile(file) {
   return RAW_EXTENSIONS.has(fileExtension(file));
 }
 
-async function rawToAsset(file) {
+async function decodeRawCanvas(file, maxSide = MAX_SIDE, allowEmbeddedFallback = true) {
   const raw = new LibRaw();
   try {
     await raw.open(new Uint8Array(await file.arrayBuffer()), {
       useCameraWb: true,
       useCameraMatrix: 3,
-      outputColor: 1,
-      outputBps: 8,
-      halfSize: true,
+      outputColor: 4,
+      outputBps: 16,
+      halfSize: false,
+      noAutoBright: true,
+      gamm: [1, 1],
       highlight: 5,
       userQual: 3,
     });
-    const [thumbnail, metadata] = await Promise.all([raw.thumbnailData(), raw.metadata(false)]);
-    if (thumbnail?.format === "jpeg" && thumbnail.data?.length) {
+    const metadata = await raw.metadata(false);
+    const rawWidth = metadata?.width || metadata?.raw_width || 0;
+    const rawHeight = metadata?.height || metadata?.raw_height || 0;
+    if (IS_MOBILE && rawWidth * rawHeight > 26000000) {
+      throw new Error("这张超大 RAW 建议在桌面 Chrome 或 Edge 中处理");
+    }
+    try {
+      const decoded = await raw.imageData();
+      if (!decoded?.data || !decoded.width || !decoded.height) {
+        throw new Error("RAW 文件没有可用的图像数据");
+      }
+      let canvas;
+      if (Number.isFinite(maxSide) && maxSide <= MAX_SIDE) {
+        const frame = raw16ToPreviewFrame(decoded, maxSide, {
+          originalFile: file,
+          metadata,
+        });
+        canvas = imageFrameToCanvas(frame);
+      } else {
+        const output = raw16ToRgba8(decoded, maxSide);
+        canvas = document.createElement("canvas");
+        canvas.width = output.width;
+        canvas.height = output.height;
+        canvas.getContext("2d").putImageData(
+          new ImageData(output.data, output.width, output.height),
+          0,
+          0,
+        );
+      }
       return {
-        url: URL.createObjectURL(new Blob([thumbnail.data], { type: "image/jpeg" })),
-        raw: true,
+        canvas,
         metadata: {
           camera: [metadata?.camera_make, metadata?.camera_model].filter(Boolean).join(" "),
           iso: metadata?.iso_speed,
-          width: metadata?.width,
-          height: metadata?.height,
-          preview: "embedded",
+          width: decoded.width,
+          height: decoded.height,
+          bitDepth: decoded.bits || 16,
+          preview: "full-raw",
+          workingSpace: "Linear ProPhoto RGB",
         },
       };
+    } catch (decodeError) {
+      if (!allowEmbeddedFallback) throw decodeError;
+      const thumbnail = await raw.thumbnailData();
+      if (thumbnail?.format !== "jpeg" || !thumbnail.data?.length) throw decodeError;
+      const url = URL.createObjectURL(new Blob([thumbnail.data], { type: "image/jpeg" }));
+      try {
+        const image = await loadImage(url);
+        const canvas = document.createElement("canvas");
+        drawSized(image, canvas, maxSide);
+        return {
+          canvas,
+          metadata: {
+            camera: [metadata?.camera_make, metadata?.camera_model].filter(Boolean).join(" "),
+            iso: metadata?.iso_speed,
+            width: rawWidth || image.naturalWidth,
+            height: rawHeight || image.naturalHeight,
+            bitDepth: 8,
+            preview: "embedded",
+            workingSpace: "Embedded JPEG",
+          },
+        };
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     }
-    const decoded = await raw.imageData();
-    if (!decoded?.data || !decoded.width || !decoded.height) throw new Error("RAW 文件没有可用的图像数据");
-    const rgba = new Uint8ClampedArray(decoded.width * decoded.height * 4);
-    const colors = decoded.colors || 3;
-    for (let source = 0, target = 0; target < rgba.length; source += colors, target += 4) {
-      rgba[target] = decoded.data[source];
-      rgba[target + 1] = decoded.data[source + Math.min(1, colors - 1)];
-      rgba[target + 2] = decoded.data[source + Math.min(2, colors - 1)];
-      rgba[target + 3] = 255;
-    }
-    const canvas = document.createElement("canvas");
-    canvas.width = decoded.width;
-    canvas.height = decoded.height;
-    canvas.getContext("2d").putImageData(new ImageData(rgba, decoded.width, decoded.height), 0, 0);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.96));
-    if (!blob) throw new Error("RAW 预览生成失败");
-    return {
-      url: URL.createObjectURL(blob),
-      raw: true,
-      metadata: {
-        camera: [metadata?.camera_make, metadata?.camera_model].filter(Boolean).join(" "),
-        iso: metadata?.iso_speed,
-        width: decoded.width,
-        height: decoded.height,
-      },
-    };
   } finally {
     raw.dispose();
   }
 }
 
+async function rawToAsset(file) {
+  const { canvas, metadata } = await decodeRawCanvas(file, MAX_SIDE, true);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("RAW 预览生成失败");
+  return {
+    url: URL.createObjectURL(blob),
+    raw: true,
+    sourceFile: file,
+    metadata,
+  };
+}
+
 async function fileToAsset(file) {
   if (isRawFile(file)) return rawToAsset(file);
   if (!file.type.startsWith("image/")) throw new Error("不支持的文件格式");
-  return { url: URL.createObjectURL(file), raw: false, metadata: null };
+  return {
+    url: URL.createObjectURL(file),
+    raw: false,
+    sourceFile: file,
+    metadata: { preview: "browser-color-managed", bitDepth: 8, workingSpace: "sRGB → Linear ProPhoto RGB" },
+  };
 }
 
 function drawSized(image, canvas, maxSide = MAX_SIDE) {
@@ -1083,45 +1135,93 @@ export function App() {
   }
 
   async function exportImage() {
-    if (!active || !styledCanvas.current) return;
-    const source = styledCanvas.current;
-    if (styledBase.current) {
-      renderAdjustedBase(
-        styledBase.current,
-        settings,
-        settings.curves,
-        source,
-        styledOutput,
-      );
-    }
+    if (!active) return;
     const longEdge = {
-      original: Math.max(source.width, source.height),
+      original: Number.POSITIVE_INFINITY,
       "4k": 3840,
       "2k": 2560,
       "1080p": 1920,
     }[exportOptions.resolution];
-    const scale = longEdge / Math.max(source.width, source.height);
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(source.width * scale));
-    canvas.height = Math.max(1, Math.round(source.height * scale));
-    canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
-    const filename = exportOptions.name.trim() || "diaoseshi-export";
-    if (exportOptions.format === "bmp") {
-      saveBlob(canvasToBmp(canvas), `${filename}.bmp`);
-    } else {
-      const mime = {
-        jpeg: "image/jpeg",
-        png: "image/png",
-        webp: "image/webp",
-      }[exportOptions.format];
-      const blob = await new Promise((resolve) =>
-        canvas.toBlob(resolve, mime, exportOptions.quality / 100),
+    setProcessing(true);
+    try {
+      let source;
+      if (active.raw && active.sourceFile) {
+        source = (await decodeRawCanvas(
+          active.sourceFile,
+          longEdge,
+          false,
+        )).canvas;
+      } else {
+        const image = await loadImage(active.url);
+        source = document.createElement("canvas");
+        const scale = Number.isFinite(longEdge)
+          ? longEdge / Math.max(image.naturalWidth, image.naturalHeight)
+          : 1;
+        source.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        source.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = source.getContext("2d", { willReadFrequently: true });
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = "high";
+        context.drawImage(image, 0, 0, source.width, source.height);
+      }
+
+      const analysisCanvas = document.createElement("canvas");
+      const analysisScale = Math.min(1, 640 / Math.max(source.width, source.height));
+      analysisCanvas.width = Math.max(1, Math.round(source.width * analysisScale));
+      analysisCanvas.height = Math.max(1, Math.round(source.height * analysisScale));
+      analysisCanvas.getContext("2d").drawImage(
+        source,
+        0,
+        0,
+        analysisCanvas.width,
+        analysisCanvas.height,
       );
-      saveBlob(blob, `${filename}.${exportOptions.format === "jpeg" ? "jpg" : exportOptions.format}`);
+      const semanticMasks = await analyzeSemanticCanvas(analysisCanvas);
+      const context = source.getContext("2d", { willReadFrequently: true });
+      const imageData = context.getImageData(0, 0, source.width, source.height);
+      const sourceProfile = active.stats || analyzePixels(imageData.data, {
+        width: source.width,
+        height: source.height,
+      });
+      applyStyleProfile(
+        imageData.data,
+        sourceProfile,
+        referenceStats || sourceProfile,
+        {
+          strength: settings.strength,
+          referenceLighting: settings.referenceLighting,
+          temperature: 0,
+          contrast: 0,
+          saturation: 0,
+          grain: 0,
+        },
+        [IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT],
+        { width: source.width, height: source.height, semanticMasks },
+      );
+      applyBasicAdjustments(imageData.data, source.width, source.height, settings);
+      applyCurveLuts(imageData.data, settings.curves);
+      context.putImageData(imageData, 0, 0);
+
+      const filename = exportOptions.name.trim() || "diaoseshi-export";
+      if (exportOptions.format === "bmp") {
+        saveBlob(canvasToBmp(source), `${filename}.bmp`);
+      } else {
+        const mime = {
+          jpeg: "image/jpeg",
+          png: "image/png",
+          webp: "image/webp",
+        }[exportOptions.format];
+        const blob = await new Promise((resolve) =>
+          source.toBlob(resolve, mime, exportOptions.quality / 100),
+        );
+        saveBlob(blob, `${filename}.${exportOptions.format === "jpeg" ? "jpg" : exportOptions.format}`);
+      }
+      setExportDialogOpen(false);
+      setExported(true);
+      window.setTimeout(() => setExported(false), 4000);
+    } finally {
+      setProcessing(false);
     }
-    setExportDialogOpen(false);
-    setExported(true);
-    window.setTimeout(() => setExported(false), 4000);
   }
 
   function exportPreset(type) {
@@ -1455,6 +1555,11 @@ export function App() {
             {references.map((item) => (
               <figure key={item.id} className="reference-thumb">
                 <img src={item.url} alt={item.name} />
+                {item.raw && (
+                  <span className={`raw-badge ${item.metadata?.preview === "embedded" ? "fallback" : ""}`}>
+                    {item.metadata?.preview === "embedded" ? "RAW 预览" : "16-bit"}
+                  </span>
+                )}
                 <button title="移除参考图" onClick={() => removeReference(item.id)}><X size={12} weight="bold" /></button>
               </figure>
             ))}
@@ -1500,6 +1605,13 @@ export function App() {
                 <div className="split-line" style={{ left: `${split}%` }}><span>‹›</span></div>
                 <span className="image-label styled-label">调色后</span>
                 <span className="image-label original-label">原图</span>
+                {active.raw && (
+                  <span className={`raw-mode-label glass-surface ${active.metadata?.preview === "embedded" ? "fallback" : ""}`}>
+                    {active.metadata?.preview === "embedded"
+                      ? "RAW 预览模式 · 完整解码失败"
+                      : `${active.metadata?.bitDepth || 16}-bit RAW · ${active.metadata?.workingSpace || "Linear ProPhoto RGB"}`}
+                  </span>
+                )}
               </>
             ) : (
               <button className="empty-canvas" onClick={() => targetInput.current?.click()}>
@@ -1545,7 +1657,11 @@ export function App() {
                   onClick={() => setActiveId(item.id)}
                 >
                   <img src={item.url} alt={item.name} />
-                  {item.raw && <span className="raw-badge">RAW</span>}
+                  {item.raw && (
+                    <span className={`raw-badge ${item.metadata?.preview === "embedded" ? "fallback" : ""}`}>
+                      {item.metadata?.preview === "embedded" ? "RAW 预览" : "16-bit"}
+                    </span>
+                  )}
                   {item.id === active?.id && <figcaption>正在编辑</figcaption>}
                   <button title="移除照片" onClick={(event) => { event.stopPropagation(); removeTarget(item.id); }}><X size={12} weight="bold" /></button>
                 </figure>
