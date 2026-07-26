@@ -285,10 +285,49 @@ function analyzeTexture(data, width, height) {
   };
 }
 
+function analyzeSemanticProfiles(data, semanticMasks, maxSamples) {
+  if (!semanticMasks?.masks) return null;
+  const regions = {};
+  Object.entries(semanticMasks.masks).forEach(([id, mask]) => {
+    if (!mask || mask.length * 4 !== data.length) return;
+    const filtered = new Uint8ClampedArray(data.length);
+    let coverage = 0;
+    let selected = 0;
+    for (let pixel = 0; pixel < mask.length; pixel += 1) {
+      const weight = clampUnit(mask[pixel]);
+      coverage += weight;
+      if (weight < 0.24) continue;
+      const index = pixel * 4;
+      filtered[index] = data[index];
+      filtered[index + 1] = data[index + 1];
+      filtered[index + 2] = data[index + 2];
+      filtered[index + 3] = 255;
+      selected += 1;
+    }
+    const coverageRatio = coverage / Math.max(1, mask.length);
+    if (selected < 24 || coverageRatio < 0.0015) return;
+    const profile = analyzePixels(filtered, Math.min(maxSamples, 36000));
+    regions[id] = {
+      ...semanticMasks.regions?.[id],
+      id,
+      coverage: coverageRatio,
+      sampleCount: selected,
+      profile,
+    };
+  });
+  return {
+    version: semanticMasks.version || 1,
+    model: semanticMasks.model || "heuristic",
+    confidence: semanticMasks.confidence ?? 0.4,
+    regions,
+  };
+}
+
 export function analyzePixels(data, options = 180000) {
   const maxSamples = typeof options === "number" ? options : options.maxSamples ?? 180000;
   const width = typeof options === "number" ? null : options.width;
   const height = typeof options === "number" ? null : options.height;
+  const semanticMasks = typeof options === "number" ? null : options.semanticMasks;
   const pixelCount = data.length / 4;
   const sampleStep = Math.max(1, Math.floor(pixelCount / maxSamples));
   const sums = [0, 0, 0];
@@ -377,7 +416,7 @@ export function analyzePixels(data, options = 180000) {
     Math.sqrt(Math.max(1, sum / count - mean[channel] * mean[channel])),
   );
 
-  return {
+  const profile = {
     version: 3,
     sampleCount: sampled,
     mean,
@@ -400,6 +439,9 @@ export function analyzePixels(data, options = 180000) {
     colorGrid: colorGrid.map((row) => row.map((cell) => finalizeColorCell(cell, count))),
     texture: analyzeTexture(data, width, height),
   };
+  const semantic = analyzeSemanticProfiles(data, semanticMasks, maxSamples);
+  if (semantic) profile.semantic = semantic;
+  return profile;
 }
 
 function robustAverage(values) {
@@ -546,7 +588,7 @@ export function averageProfiles(items) {
     : null;
   const shoulderWidth = Math.max(1, quantiles[9] - quantiles[7]);
   const highlightRolloff = (quantiles[9] - quantiles[8]) / shoulderWidth;
-  return {
+  const result = {
     ...profile,
     neutralZones,
     colorGrid,
@@ -558,6 +600,37 @@ export function averageProfiles(items) {
       chromaRestraint: 1 - clampUnit(profile.saturation),
     },
   };
+  const semanticItems = items.map((item) => item.semantic).filter(Boolean);
+  if (semanticItems.length) {
+    const regionIds = [...new Set(
+      semanticItems.flatMap((item) => Object.keys(item.regions || {})),
+    )];
+    const regions = {};
+    regionIds.forEach((id) => {
+      const available = items
+        .map((item) => item.semantic?.regions?.[id])
+        .filter((region) => region?.profile);
+      if (!available.length) return;
+      regions[id] = {
+        id,
+        label: available.find((region) => region.label)?.label || id,
+        color: available.find((region) => region.color)?.color,
+        coverage: robustAverage(available.map((region) => region.coverage)),
+        confidence: robustAverage(available.map((region) => region.confidence ?? 0.5)),
+        sampleCount: available.reduce((sum, region) => sum + region.sampleCount, 0),
+        profile: averageProfiles(available.map((region) => region.profile)),
+      };
+    });
+    result.semantic = {
+      version: 1,
+      model: semanticItems.some((item) => item.model === "mediapipe-local")
+        ? "mediapipe-local"
+        : "heuristic",
+      confidence: robustAverage(semanticItems.map((item) => item.confidence)),
+      regions,
+    };
+  }
+  return result;
 }
 
 function monotoneToneMap(sourceValues, targetValues) {
@@ -723,6 +796,64 @@ function buildVersion3Lookups(source, reference) {
   };
 }
 
+const SEMANTIC_PRIORITY = [
+  "skin",
+  "hair",
+  "clothing",
+  "sky",
+  "foliage",
+  "neutral",
+  "specular",
+  "person",
+];
+
+function buildSemanticLookups(source, reference) {
+  const sourceRegions = source?.semantic?.regions;
+  const referenceRegions = reference?.semantic?.regions;
+  if (!sourceRegions || !referenceRegions) return [];
+  return SEMANTIC_PRIORITY.flatMap((id) => {
+    const sourceRegion = sourceRegions[id];
+    const referenceRegion = referenceRegions[id];
+    if (
+      !sourceRegion?.profile?.colorGrid
+      || !referenceRegion?.profile?.colorGrid
+      || sourceRegion.coverage < 0.0015
+      || referenceRegion.coverage < 0.0015
+    ) return [];
+    const evidence = smoothstep(
+      0.0015,
+      0.065,
+      Math.min(sourceRegion.coverage, referenceRegion.coverage),
+    );
+    return [{
+      id,
+      confidence: evidence
+        * Math.min(
+          sourceRegion.confidence ?? 0.7,
+          referenceRegion.confidence ?? 0.7,
+        ),
+      lookups: buildVersion3Lookups(sourceRegion.profile, referenceRegion.profile),
+      toneLut: createToneLutV3(sourceRegion.profile, referenceRegion.profile, 1),
+    }];
+  });
+}
+
+function strongestSemanticRegion(semanticLookups, semanticMasks, pixel) {
+  if (!semanticLookups.length || !semanticMasks?.masks) return null;
+  let selected = null;
+  let bestWeight = 0.16;
+  semanticLookups.forEach((entry) => {
+    const maskWeight = semanticMasks.masks[entry.id]?.[pixel] || 0;
+    const priorityBoost = entry.id === "skin" ? 1.18 : entry.id === "person" ? 0.72 : 1;
+    const weight = maskWeight * priorityBoost * entry.confidence;
+    if (weight > bestWeight) {
+      selected = { ...entry, maskWeight: clampUnit(maskWeight) };
+      bestWeight = weight;
+    }
+  });
+  return selected;
+}
+
 function oklabToLinearRgb(lightness, a, b) {
   const lRoot = lightness + 0.3963377774 * a + 0.2158037573 * b;
   const mRoot = lightness - 0.1055613458 * a - 0.0638541728 * b;
@@ -831,6 +962,7 @@ export function applyStyleProfile(
     ? createToneLutV3(source, reference, strength)
     : createToneLut(source, reference, strength);
   const version3Lookups = version3 ? buildVersion3Lookups(source, reference) : null;
+  const semanticLookups = version3 ? buildSemanticLookups(source, reference) : [];
   const zoneDeltas = advanced && !version3
     ? source.zones.map((zone, index) => ({
       a: Math.max(-0.075, Math.min(0.075, reference.zones[index].a - zone.a)),
@@ -870,6 +1002,7 @@ export function applyStyleProfile(
 
       let chroma = Math.hypot(a, b);
       let hue = (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
+      const originalHue = hue;
       const neutralConfidence = 1 - smoothstep(0.018, 0.08, chroma);
       a += (
         version3Lookups.neutralA[toneIndex] * neutralConfidence
@@ -907,6 +1040,50 @@ export function applyStyleProfile(
         chroma = Math.min(0.36, chroma);
         a = Math.cos(hue * Math.PI / 180) * chroma;
         b = Math.sin(hue * Math.PI / 180) * chroma;
+      }
+      const semantic = strongestSemanticRegion(
+        semanticLookups,
+        dimensions?.semanticMasks,
+        index / 4,
+      );
+      if (semantic) {
+        const lookup = semantic.lookups;
+        const semanticToneIndex = Math.min(
+          lookup.toneBins - 1,
+          Math.round(originalLightness * (lookup.toneBins - 1)),
+        );
+        const semanticHueIndex = Math.min(
+          lookup.hueBins - 1,
+          Math.round(originalHue / 360 * lookup.hueBins) % lookup.hueBins,
+        );
+        const lookupIndex = semanticToneIndex * lookup.hueBins + semanticHueIndex;
+        const factor = semantic.maskWeight * semantic.confidence * strength * 0.64;
+        const semanticTone = semantic.toneLut[Math.round(originalLightness * 1023)];
+        lightness += (semanticTone - lightness) * factor * 0.34;
+        a += (
+          lookup.neutralA[semanticToneIndex]
+          + lookup.zoneA[semanticToneIndex] * 0.12
+        ) * factor;
+        b += (
+          lookup.neutralB[semanticToneIndex]
+          + lookup.zoneB[semanticToneIndex] * 0.12
+        ) * factor;
+        chroma = Math.hypot(a, b);
+        hue = (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
+        const hueLimit = semantic.id === "skin" ? 10 : 18;
+        const hueShift = Math.max(
+          -hueLimit,
+          Math.min(hueLimit, lookup.hueShift[lookupIndex]),
+        );
+        const logChroma = Math.max(
+          Math.log(0.72),
+          Math.min(Math.log(1.38), lookup.logChroma[lookupIndex]),
+        );
+        hue += hueShift * factor;
+        chroma *= Math.exp(logChroma * factor);
+        lightness += lookup.lightnessShift[lookupIndex] * factor * 0.16;
+        a = Math.cos(hue * Math.PI / 180) * Math.min(0.36, chroma);
+        b = Math.sin(hue * Math.PI / 180) * Math.min(0.36, chroma);
       }
       mapped = gamutMappedOklabToRgb(clampUnit(lightness), a, b);
     } else if (advanced) {

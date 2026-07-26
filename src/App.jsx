@@ -23,6 +23,7 @@ import {
 } from "./colorEngine";
 import { adjustBasicPixel, applyBasicAdjustments } from "./basicAdjustments";
 import { applyCurveLuts, smoothCurveLut as curveLut } from "./curveMath";
+import { analyzeSemanticCanvas } from "./semanticEngine";
 
 const MAX_SIDE = 1600;
 const CHANNELS = [
@@ -251,9 +252,10 @@ async function analyzeUrl(url) {
   const image = await loadImage(url);
   const canvas = document.createElement("canvas");
   const context = drawSized(image, canvas, 640);
+  const semanticMasks = await analyzeSemanticCanvas(canvas);
   return analyzePixels(
     context.getImageData(0, 0, canvas.width, canvas.height).data,
-    { width: canvas.width, height: canvas.height },
+    { width: canvas.width, height: canvas.height, semanticMasks },
   );
 }
 
@@ -880,16 +882,42 @@ function StyleAnalysis({ profile }) {
     ["中灰", profile.tone.midtone],
     ["白位", profile.tone.whitePoint],
   ];
+  const semantic = profile.semantic;
+  const semanticRegions = Object.values(semantic?.regions || {})
+    .filter((region) => region.coverage >= 0.004)
+    .sort((left, right) => right.coverage - left.coverage);
   return (
     <section className="inspector-section style-analysis">
       <div className="section-title">
         <h2>风格 DNA</h2>
         <span className="analysis-version">
-          {profile.version >= 3 ? "分区感知 v3" : "感知分析 v2"}
+          {semantic ? "语义区域 v4" : profile.version >= 3 ? "分区感知 v3" : "感知分析 v2"}
         </span>
       </div>
       {profile.version >= 3 && (
-        <p className="profile-intent">中性色独立校准 · 21 色域分区 · 自然质感匹配</p>
+        <p className="profile-intent">
+          {semantic
+            ? "本地语义蒙版 · 区域独立色彩档案 · 低置信度安全回退"
+            : "中性色独立校准 · 21 色域分区 · 自然质感匹配"}
+        </p>
+      )}
+      {semantic && (
+        <div className="semantic-summary" aria-label="语义区域识别状态">
+          <div className="semantic-status">
+            <span className={`semantic-indicator ${semantic.model === "mediapipe-local" ? "ready" : "fallback"}`} />
+            <span>{semantic.model === "mediapipe-local" ? "本地 AI 已启用" : "启发式安全模式"}</span>
+            <strong>{Math.round((semantic.confidence || 0) * 100)}%</strong>
+          </div>
+          <div className="semantic-regions">
+            {semanticRegions.slice(0, 6).map((region) => (
+              <span key={region.id} title={`画面覆盖 ${Math.round(region.coverage * 100)}%`}>
+                <i style={{ background: region.color || "#9ba1ab" }} />
+                {region.label}
+                <b>{Math.round(region.coverage * 100)}%</b>
+              </span>
+            ))}
+          </div>
+        </div>
       )}
       <div className="tone-metrics" aria-label="影调分析">
         {toneMetrics.map(([label, value]) => (
@@ -963,6 +991,7 @@ export function App() {
   const curveAdjustedPreviewBase = useRef(null);
   const styledOutput = useRef(null);
   const curvePreviewOutput = useRef(null);
+  const semanticMaskCache = useRef(new Map());
   const referenceInput = useRef(null);
   const targetInput = useRef(null);
   const active = targets.find((item) => item.id === activeId) || targets[0] || null;
@@ -1234,16 +1263,25 @@ export function App() {
     let cancelled = false;
     const timer = window.setTimeout(() => {
       setProcessing(true);
-      loadImage(active.url).then((image) => {
+      loadImage(active.url).then(async (image) => {
         if (cancelled) return;
         const originalContext = drawSized(image, originalCanvas.current);
         const styledContext = drawSized(image, styledCanvas.current);
         const imageData = originalContext.getImageData(0, 0, originalCanvas.current.width, originalCanvas.current.height);
         const data = imageData.data;
-        const source = active.stats || analyzePixels(data, {
+        const maskKey = `${active.id}:${active.url}:${imageData.width}x${imageData.height}`;
+        let semanticMasks = semanticMaskCache.current.get(maskKey);
+        if (!semanticMasks) {
+          semanticMasks = await analyzeSemanticCanvas(originalCanvas.current);
+          if (cancelled) return;
+          semanticMaskCache.current.set(maskKey, semanticMasks);
+        }
+        const fullSource = analyzePixels(data, {
           width: imageData.width,
           height: imageData.height,
+          semanticMasks,
         });
+        const source = active.stats?.semantic ? active.stats : fullSource;
         const reference = referenceStats || source;
         applyStyleProfile(
           data,
@@ -1257,7 +1295,11 @@ export function App() {
             grain: 0,
           },
           [IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT, IDENTITY_LUT],
-          { width: imageData.width, height: imageData.height },
+          {
+            width: imageData.width,
+            height: imageData.height,
+            semanticMasks,
+          },
         );
         if (cancelled) return;
         const base = {

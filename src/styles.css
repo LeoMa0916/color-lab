@@ -661,6 +661,70 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   line-height: 1.45;
 }
 
+.semantic-summary {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 11px;
+  padding: 9px;
+  border: 1px solid rgba(255, 255, 255, .075);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .025);
+}
+
+.semantic-status {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  color: #b7bcc5;
+  font-size: 8px;
+}
+
+.semantic-status strong {
+  color: #e8ebf2;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.semantic-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: 0 0 8px currentColor;
+}
+
+.semantic-indicator.ready { color: #69d99a; background: currentColor; }
+.semantic-indicator.fallback { color: #e7b66c; background: currentColor; }
+
+.semantic-regions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.semantic-regions > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, .06);
+  border-radius: 999px;
+  background: rgba(8, 11, 14, .5);
+  color: #989ea8;
+  font-size: 7px;
+}
+
+.semantic-regions i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.semantic-regions b {
+  color: #d5d8de;
+  font-variant-numeric: tabular-nums;
+}
+
 .muted-analysis p {
   margin: 0;
   color: var(--muted);
