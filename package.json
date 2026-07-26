@@ -10,6 +10,7 @@
     "verify:basic": "node scripts/verify-basic-adjustments.mjs",
     "verify:color": "node scripts/verify-color-engine.mjs",
     "verify:curve": "node scripts/verify-curve.mjs",
+    "verify:lighting": "node scripts/verify-lighting.mjs",
     "verify:semantic": "node scripts/verify-semantic.mjs"
   },
   "dependencies": {

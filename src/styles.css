@@ -725,6 +725,35 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
   font-variant-numeric: tabular-nums;
 }
 
+.lighting-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  overflow: hidden;
+  margin: 0 0 10px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .06);
+}
+
+.lighting-summary > span {
+  display: grid;
+  gap: 3px;
+  padding: 7px 6px;
+  background: rgba(10, 13, 17, .74);
+}
+
+.lighting-summary small {
+  color: #777e89;
+  font-size: 7px;
+}
+
+.lighting-summary strong {
+  color: #d9dde5;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
 .muted-analysis p {
   margin: 0;
   color: var(--muted);

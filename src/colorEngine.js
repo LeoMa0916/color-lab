@@ -1,3 +1,13 @@
+import {
+  analyzeSceneLighting,
+  applySceneLighting,
+  averageLightingProfiles,
+  blendSceneLighting,
+  lightingProfileWeights,
+  normalizeFrameLighting,
+  normalizeRgbForLighting,
+} from "./lightingEngine.js";
+
 export const HUE_BANDS = [
   { id: "red", label: "红", anchor: 25, color: "#ff5b62" },
   { id: "orange", label: "橙", anchor: 55, color: "#ff984f" },
@@ -328,6 +338,7 @@ export function analyzePixels(data, options = 180000) {
   const width = typeof options === "number" ? null : options.width;
   const height = typeof options === "number" ? null : options.height;
   const semanticMasks = typeof options === "number" ? null : options.semanticMasks;
+  const skipLighting = typeof options === "number" ? true : options.skipLighting;
   const pixelCount = data.length / 4;
   const sampleStep = Math.max(1, Math.floor(pixelCount / maxSamples));
   const sums = [0, 0, 0];
@@ -441,6 +452,14 @@ export function analyzePixels(data, options = 180000) {
   };
   const semantic = analyzeSemanticProfiles(data, semanticMasks, maxSamples);
   if (semantic) profile.semantic = semantic;
+  if (width && height && !skipLighting) {
+    const lighting = analyzeSceneLighting(data, width, height, semanticMasks);
+    if (lighting) {
+      const normalized = normalizeFrameLighting(data, width, height, lighting);
+      lighting.intrinsic = analyzePixels(normalized, Math.min(maxSamples, 120000));
+      profile.lighting = lighting;
+    }
+  }
   return profile;
 }
 
@@ -466,6 +485,12 @@ function circularAverage(items, fallback) {
 
 export function averageProfiles(items) {
   if (!items.length) return null;
+  const sourceItems = items;
+  const profileWeights = lightingProfileWeights(sourceItems);
+  if (items.length >= 3) {
+    items = sourceItems.flatMap((item, index) =>
+      Array.from({ length: Math.max(1, Math.round(profileWeights[index] * 4)) }, () => item));
+  }
   if (!items.every((item) => item?.version >= 2 && item.tone && item.zones && item.colors)) {
     const count = items.length;
     return {
@@ -527,7 +552,7 @@ export function averageProfiles(items) {
     item.version >= 3 && item.neutralZones && item.colorGrid);
   const profile = {
     version: isVersion3 ? 3 : 2,
-    sourceCount: items.length,
+    sourceCount: sourceItems.length,
     sampleCount: items.reduce((sum, item) => sum + item.sampleCount, 0),
     mean: [0, 1, 2].map((channel) => robustAverage(items.map((item) => item.mean[channel]))),
     std: [0, 1, 2].map((channel) => robustAverage(items.map((item) => item.std[channel]))),
@@ -600,6 +625,17 @@ export function averageProfiles(items) {
       chromaRestraint: 1 - clampUnit(profile.saturation),
     },
   };
+  const lighting = averageLightingProfiles(sourceItems, profileWeights);
+  if (lighting) {
+    const intrinsicItems = sourceItems
+      .map((item) => item.lighting?.intrinsic)
+      .filter(Boolean);
+    if (intrinsicItems.length === sourceItems.length) {
+      lighting.intrinsic = averageProfiles(intrinsicItems);
+    }
+    result.lighting = lighting;
+    result.referenceWeights = profileWeights;
+  }
   const semanticItems = items.map((item) => item.semantic).filter(Boolean);
   if (semanticItems.length) {
     const regionIds = [...new Set(
@@ -951,27 +987,41 @@ export function applyStyleProfile(
   dimensions = null,
 ) {
   const strength = clampUnit(settings.strength / 100);
-  const advanced = source?.version >= 2 && reference?.version >= 2;
-  const version3 = source?.version >= 3
-    && reference?.version >= 3
-    && source.neutralZones
-    && reference.neutralZones
-    && source.colorGrid
-    && reference.colorGrid;
+  const lightingAware = Number.isFinite(settings.referenceLighting)
+    && source?.lighting?.intrinsic
+    && reference?.lighting?.intrinsic;
+  const styleSource = lightingAware ? source.lighting.intrinsic : source;
+  const styleReference = lightingAware ? reference.lighting.intrinsic : reference;
+  const blendedLighting = lightingAware
+    ? blendSceneLighting(
+      source.lighting,
+      reference.lighting,
+      settings.referenceLighting / 100,
+    )
+    : null;
+  const advanced = styleSource?.version >= 2 && styleReference?.version >= 2;
+  const version3 = styleSource?.version >= 3
+    && styleReference?.version >= 3
+    && styleSource.neutralZones
+    && styleReference.neutralZones
+    && styleSource.colorGrid
+    && styleReference.colorGrid;
   const toneLut = version3
-    ? createToneLutV3(source, reference, strength)
-    : createToneLut(source, reference, strength);
-  const version3Lookups = version3 ? buildVersion3Lookups(source, reference) : null;
+    ? createToneLutV3(styleSource, styleReference, strength)
+    : createToneLut(styleSource, styleReference, strength);
+  const version3Lookups = version3
+    ? buildVersion3Lookups(styleSource, styleReference)
+    : null;
   const semanticLookups = version3 ? buildSemanticLookups(source, reference) : [];
   const zoneDeltas = advanced && !version3
-    ? source.zones.map((zone, index) => ({
-      a: Math.max(-0.075, Math.min(0.075, reference.zones[index].a - zone.a)),
-      b: Math.max(-0.075, Math.min(0.075, reference.zones[index].b - zone.b)),
+    ? styleSource.zones.map((zone, index) => ({
+      a: Math.max(-0.075, Math.min(0.075, styleReference.zones[index].a - zone.a)),
+      b: Math.max(-0.075, Math.min(0.075, styleReference.zones[index].b - zone.b)),
     }))
     : [];
   const colorDeltas = advanced && !version3
-    ? source.colors.map((color, index) => {
-      const target = reference.colors[index];
+    ? styleSource.colors.map((color, index) => {
+      const target = styleReference.colors[index];
       const evidence = Math.min(color.coverage, target.coverage);
       return {
         hue: Math.max(-28, Math.min(28, circularDelta(target.hue, color.hue))),
@@ -989,10 +1039,20 @@ export function applyStyleProfile(
   for (let index = 0; index < data.length; index += 4) {
     if (data[index + 3] < 16) continue;
     const originalRgb = [data[index], data[index + 1], data[index + 2]];
+    const pixel = index / 4;
+    const positionX = dimensions?.width
+      ? (pixel % dimensions.width) / Math.max(1, dimensions.width - 1)
+      : 0.5;
+    const positionY = dimensions?.width && dimensions?.height
+      ? Math.floor(pixel / dimensions.width) / Math.max(1, dimensions.height - 1)
+      : 0.5;
+    const workingRgb = lightingAware
+      ? normalizeRgbForLighting(originalRgb, source.lighting, positionX, positionY)
+      : originalRgb;
     let mapped;
 
     if (version3) {
-      let [lightness, a, b] = rgbToOklab(...originalRgb);
+      let [lightness, a, b] = rgbToOklab(...workingRgb);
       const originalLightness = clampUnit(lightness);
       const toneIndex = Math.min(
         version3Lookups.toneBins - 1,
@@ -1087,7 +1147,7 @@ export function applyStyleProfile(
       }
       mapped = gamutMappedOklabToRgb(clampUnit(lightness), a, b);
     } else if (advanced) {
-      let [lightness, a, b] = rgbToOklab(...originalRgb);
+      let [lightness, a, b] = rgbToOklab(...workingRgb);
       const originalLightness = clampUnit(lightness);
       lightness = toneLut[Math.round(originalLightness * 255)] / 255;
 
@@ -1124,7 +1184,10 @@ export function applyStyleProfile(
       }
       mapped = oklabToRgb(clampUnit(lightness), a, b);
     } else {
-      mapped = legacyTransfer(originalRgb, source, reference, strength);
+      mapped = legacyTransfer(workingRgb, styleSource, styleReference, strength);
+    }
+    if (lightingAware) {
+      mapped = applySceneLighting(mapped, blendedLighting, positionX, positionY);
     }
 
     mapped[0] += settings.temperature * 0.55;

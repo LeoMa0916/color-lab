@@ -33,6 +33,7 @@ const CHANNELS = [
   { id: "blue", label: "蓝", color: "#5b8cff" },
 ];
 const BASIC_DEFAULTS = {
+  referenceLighting: 35,
   tint: 0,
   exposure: 0,
   highlights: 0,
@@ -777,6 +778,13 @@ const BASIC_GROUPS = [
   {
     label: "白平衡",
     controls: [
+      {
+        key: "referenceLighting",
+        label: "参考光线",
+        min: 0,
+        max: 100,
+        suffix: "%",
+      },
       { key: "temperature", label: "色温", min: -40, max: 40 },
       { key: "tint", label: "色调", min: -100, max: 100 },
     ],
@@ -883,6 +891,7 @@ function StyleAnalysis({ profile }) {
     ["白位", profile.tone.whitePoint],
   ];
   const semantic = profile.semantic;
+  const lighting = profile.lighting;
   const semanticRegions = Object.values(semantic?.regions || {})
     .filter((region) => region.coverage >= 0.004)
     .sort((left, right) => right.coverage - left.coverage);
@@ -917,6 +926,22 @@ function StyleAnalysis({ profile }) {
               </span>
             ))}
           </div>
+        </div>
+      )}
+      {lighting && (
+        <div className="lighting-summary" aria-label="参考光线分析">
+          <span>
+            <small>参考光源</small>
+            <strong>{Math.round(lighting.temperature)}K</strong>
+          </span>
+          <span>
+            <small>场景曝光</small>
+            <strong>{lighting.exposureEV >= 0 ? "+" : ""}{lighting.exposureEV.toFixed(2)} EV</strong>
+          </span>
+          <span>
+            <small>可信度</small>
+            <strong>{Math.round(lighting.confidence * 100)}%</strong>
+          </span>
         </div>
       )}
       <div className="tone-metrics" aria-label="影调分析">
@@ -1328,6 +1353,7 @@ export function App() {
     active?.stats,
     referenceStats,
     settings.strength,
+    settings.referenceLighting,
   ]);
 
   useEffect(() => {
