@@ -8,14 +8,20 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "verify:basic": "node scripts/verify-basic-adjustments.mjs",
+    "verify:browser": "node scripts/verify-browser-e2e.mjs",
     "verify:color": "node scripts/verify-color-engine.mjs",
     "verify:color-management": "node scripts/verify-color-management.mjs",
     "verify:curve": "node scripts/verify-curve.mjs",
+    "verify:datasets": "node scripts/verify-datasets.mjs",
     "verify:lighting": "node scripts/verify-lighting.mjs",
     "verify:lut": "node scripts/verify-lut.mjs",
     "verify:performance": "node scripts/verify-performance.mjs",
+    "verify:quality": "node scripts/verify-quality-metrics.mjs",
+    "verify:regression": "node scripts/verify-camera-regression.mjs",
     "verify:semantic": "node scripts/verify-semantic.mjs",
-    "verify:texture": "node scripts/verify-texture.mjs"
+    "verify:texture": "node scripts/verify-texture.mjs",
+    "verify:bundle": "node scripts/verify-bundle.mjs",
+    "verify:all": "node scripts/verify-all.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.22-rc.20250304",

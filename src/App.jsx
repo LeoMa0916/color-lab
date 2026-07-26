@@ -43,6 +43,7 @@ import {
   detectRenderBackend,
   recommendedPreviewSide,
 } from "./renderBackend";
+import calibrationResults from "../validation/calibration-results.json";
 
 const IS_MOBILE = typeof navigator !== "undefined"
   && (/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints > 2);
@@ -967,6 +968,24 @@ function StyleAnalysis({ profile }) {
             ? "本地语义蒙版 · 区域独立色彩档案 · 低置信度安全回退"
             : "中性色独立校准 · 21 色域分区 · 自然质感匹配"}
         </p>
+      )}
+      {semantic && (
+        <div className="calibration-summary" aria-label="相机风格校准状态">
+          <div>
+            <span>参考驱动近似</span>
+            <small>达到 30 组跨场景样片后才标记“已校准”</small>
+          </div>
+          <div className="calibration-brands">
+            {Object.values(calibrationResults.brands).map((brand) => (
+              <span key={brand.label}>
+                {brand.label}
+                <strong>
+                  {brand.qualifiedGroups}/{calibrationResults.minimumQualifiedGroups}
+                </strong>
+              </span>
+            ))}
+          </div>
+        </div>
       )}
       {semantic && (
         <div className="semantic-summary" aria-label="语义区域识别状态">

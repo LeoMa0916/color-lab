@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "privacy": {
+    "processing": "browser-local-only",
+    "privateDirectory": "qa-private",
+    "committedPrivateFields": [],
+    "forbiddenCommittedFields": ["filePath", "fileName", "binary", "thumbnail"]
+  },
+  "entries": [
+    {
+      "id": "color-engine-synthetic-matrix-v1",
+      "kind": "generated",
+      "license": "CC0-1.0",
+      "source": "scripts/verify-camera-regression.mjs",
+      "redistributable": true,
+      "scenarios": [
+        "portrait",
+        "sky",
+        "foliage",
+        "mixed-light",
+        "night",
+        "high-contrast",
+        "neutral"
+      ]
+    }
+  ]
+}

@@ -7,6 +7,9 @@ export default defineConfig({
     exclude: ["libraw-wasm"],
   },
   server: {
+    watch: {
+      ignored: ["**/qa-private/**"],
+    },
     warmup: {
       clientFiles: ["./src/main.jsx"],
     },

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "samples": [
+    {
+      "sha256": "64-character hash only",
+      "cameraMake": "manufacturer or unknown",
+      "cameraModel": "model or unknown",
+      "scenario": "portrait | sky | foliage | mixed-light | night | high-contrast | neutral",
+      "role": "reference | target | rendered",
+      "result": {
+        "engineVersion": 4,
+        "metrics": {}
+      }
+    }
+  ]
+}

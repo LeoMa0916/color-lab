@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "minimumQualifiedGroups": 30,
+  "brands": {
+    "fujifilm": {
+      "label": "富士",
+      "qualifiedGroups": 0,
+      "status": "reference-driven-approximation"
+    },
+    "hasselblad": {
+      "label": "哈苏",
+      "qualifiedGroups": 0,
+      "status": "reference-driven-approximation"
+    }
+  }
+}

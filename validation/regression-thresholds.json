@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "maximumV4Regression": {
+    "ciede2000Ratio": 1.08,
+    "ciede2000Allowance": 0.2,
+    "skinHueRatio": 1.1,
+    "skinHueAllowance": 0.5,
+    "toneRatio": 1.1,
+    "toneAllowance": 0.4,
+    "distributionRatio": 1.12,
+    "distributionAllowance": 0.01,
+    "clipRateAllowance": 0.02,
+    "textureRatio": 1.2,
+    "textureAllowance": 0.001
+  },
+  "absolute": {
+    "finiteValuesRequired": true,
+    "maximumCombinedClipRate": 0.08
+  }
+}
