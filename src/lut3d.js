@@ -119,14 +119,16 @@ function tetrahedralSampleInto(lut, redInput, greenInput, blueInput, output) {
   const fr = scaledRed - red;
   const fg = scaledGreen - green;
   const fb = scaledBlue - blue;
-  const i000 = lutIndex(lut.size, red, green, blue);
-  const i100 = lutIndex(lut.size, red + 1, green, blue);
-  const i010 = lutIndex(lut.size, red, green + 1, blue);
-  const i001 = lutIndex(lut.size, red, green, blue + 1);
-  const i110 = lutIndex(lut.size, red + 1, green + 1, blue);
-  const i101 = lutIndex(lut.size, red + 1, green, blue + 1);
-  const i011 = lutIndex(lut.size, red, green + 1, blue + 1);
-  const i111 = lutIndex(lut.size, red + 1, green + 1, blue + 1);
+  const greenStride = lut.size * 3;
+  const blueStride = lut.size * greenStride;
+  const i000 = blue * blueStride + green * greenStride + red * 3;
+  const i100 = i000 + 3;
+  const i010 = i000 + greenStride;
+  const i001 = i000 + blueStride;
+  const i110 = i010 + 3;
+  const i101 = i001 + 3;
+  const i011 = i001 + greenStride;
+  const i111 = i011 + 3;
   for (let channel = 0; channel < 3; channel += 1) {
     const c000 = lut.data[i000 + channel];
     let value = c000;
@@ -182,6 +184,8 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
   const residualEntries = Object.entries(styleLuts.residuals || {});
   const mapped = [0, 0, 0];
   const delta = [0, 0, 0];
+  const residual = [0, 0, 0];
+  const hasResiduals = residualEntries.length > 0;
   for (let pixel = 0; pixel < width * height; pixel += 1) {
     const index = pixel * 4;
     if (data[index + 3] < 16) continue;
@@ -189,17 +193,26 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
     const green = data[index + 1] / 255;
     const blue = data[index + 2] / 255;
     tetrahedralSampleInto(styleLuts.global, red, green, blue, mapped);
+    if (!hasResiduals) {
+      data[index] = mapped[0] * 255;
+      data[index + 1] = mapped[1] * 255;
+      data[index + 2] = mapped[2] * 255;
+      continue;
+    }
     let totalWeight = 0;
-    const residual = [0, 0, 0];
-    residualEntries.forEach(([region, lut]) => {
+    residual[0] = 0;
+    residual[1] = 0;
+    residual[2] = 0;
+    for (let entry = 0; entry < residualEntries.length; entry += 1) {
+      const [region, lut] = residualEntries[entry];
       const weight = clampUnit(maskValue(semanticMasks, region, pixel, width, height));
-      if (weight < 0.01) return;
+      if (weight < 0.01) continue;
       tetrahedralSampleInto(lut, red, green, blue, delta);
       residual[0] += (delta[0] - 0.5) * weight;
       residual[1] += (delta[1] - 0.5) * weight;
       residual[2] += (delta[2] - 0.5) * weight;
       totalWeight += weight;
-    });
+    }
     const normalization = totalWeight > 1 ? 1 / totalWeight : 1;
     data[index] = clampUnit(mapped[0] + residual[0] * normalization) * 255;
     data[index + 1] = clampUnit(mapped[1] + residual[1] * normalization) * 255;

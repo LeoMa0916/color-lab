@@ -38,6 +38,7 @@ function hashNoise(x, y, seed) {
 }
 
 function smoothNoise(x, y, cellSize, seed) {
+  if (cellSize === 1) return hashNoise(Math.floor(x), Math.floor(y), seed);
   const gridX = x / cellSize;
   const gridY = y / cellSize;
   const x0 = Math.floor(gridX);
@@ -46,10 +47,12 @@ function smoothNoise(x, y, cellSize, seed) {
   const ty = gridY - y0;
   const smoothX = tx * tx * (3 - 2 * tx);
   const smoothY = ty * ty * (3 - 2 * ty);
-  const top = hashNoise(x0, y0, seed)
-    + (hashNoise(x0 + 1, y0, seed) - hashNoise(x0, y0, seed)) * smoothX;
-  const bottom = hashNoise(x0, y0 + 1, seed)
-    + (hashNoise(x0 + 1, y0 + 1, seed) - hashNoise(x0, y0 + 1, seed)) * smoothX;
+  const topLeft = hashNoise(x0, y0, seed);
+  const topRight = hashNoise(x0 + 1, y0, seed);
+  const bottomLeft = hashNoise(x0, y0 + 1, seed);
+  const bottomRight = hashNoise(x0 + 1, y0 + 1, seed);
+  const top = topLeft + (topRight - topLeft) * smoothX;
+  const bottom = bottomLeft + (bottomRight - bottomLeft) * smoothX;
   return top + (bottom - top) * smoothY;
 }
 
