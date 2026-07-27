@@ -34,14 +34,14 @@
 
 ### Typography
 
-- **Heading Font:** Geist
-- **Body Font:** Geist
+- **Heading Font:** Geist Variable
+- **Body Font:** Geist Variable
 - **Mood:** spatial, legible, glass, system, clean, neutral
-- **Google Fonts:** [Geist](https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap)
+- **Local Font Package:** `@fontsource-variable/geist@5.3.0`
 
 **CSS Import:**
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&display=swap');
+@import "@fontsource-variable/geist/wght.css";
 ```
 
 ### Spacing Variables

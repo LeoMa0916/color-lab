@@ -13,24 +13,24 @@ colors:
   glass-edge: "rgba(255, 255, 255, .20)"
 typography:
   display:
-    fontFamily: "Geist, -apple-system, BlinkMacSystemFont, sans-serif"
+    fontFamily: "Geist Variable, Geist, -apple-system, BlinkMacSystemFont, sans-serif"
     fontSize: "clamp(3rem, 5.5vw, 5rem)"
     fontWeight: 500
     lineHeight: 1.02
     letterSpacing: "-0.05em"
   title:
-    fontFamily: "Geist, -apple-system, BlinkMacSystemFont, sans-serif"
+    fontFamily: "Geist Variable, Geist, -apple-system, BlinkMacSystemFont, sans-serif"
     fontSize: "21px"
     fontWeight: 680
     lineHeight: 1.2
     letterSpacing: "-0.02em"
   body:
-    fontFamily: "Geist, -apple-system, BlinkMacSystemFont, sans-serif"
+    fontFamily: "Geist Variable, Geist, -apple-system, BlinkMacSystemFont, sans-serif"
     fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.6
   label:
-    fontFamily: "Geist, -apple-system, BlinkMacSystemFont, sans-serif"
+    fontFamily: "Geist Variable, Geist, -apple-system, BlinkMacSystemFont, sans-serif"
     fontSize: "12px"
     fontWeight: 550
     lineHeight: 1.35
@@ -112,8 +112,8 @@ components:
 
 ## Typography
 
-**Display Font:** Geist（系统无衬线回退）
-**Body Font:** Geist（系统无衬线回退）
+**Display Font:** 本地 Geist Variable（系统无衬线回退）
+**Body Font:** 本地 Geist Variable（系统无衬线回退）
 
 **Character:** 几何但不过度技术化，中文由系统字体自然补位；标题以紧凑字距形成影像品牌感，控件保持易读。
 
