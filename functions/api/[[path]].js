@@ -1,5 +1,6 @@
 const COOKIE_NAME = "color_lab_session";
-const PASSWORD_ITERATIONS = 210000;
+// Cloudflare Workers currently reject PBKDF2 requests above 100,000 iterations.
+const PASSWORD_ITERATIONS = 100000;
 const REMEMBERED_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const TAB_SESSION_MS = 12 * 60 * 60 * 1000;
 const AUTH_WINDOW_MS = 15 * 60 * 1000;
