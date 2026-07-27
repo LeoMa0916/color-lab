@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "color-lab",
+  "compatibility_date": "2026-07-27",
+  "pages_build_output_dir": "./dist",
+  "d1_databases": [
+    {
+      "binding": "COLOR_LAB_DB",
+      "database_name": "color-lab-cloud",
+      "database_id": "303ebe34-d1a1-44e3-8377-a8b45a12449b"
+    }
+  ]
+}
