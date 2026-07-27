@@ -2,6 +2,7 @@ node_modules/
 dist/
 .npm-cache/
 .npmrc
+.wrangler/
 
 # Local Codex/project instructions and QA captures
 AGENTS.md

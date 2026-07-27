@@ -632,7 +632,7 @@ export function averageProfiles(items) {
     });
     result.semantic = {
       version: 1,
-      model: semanticItems.some((item) => item.model === "mediapipe-local")
+      model: semanticItems.every((item) => item.model === "mediapipe-local")
         ? "mediapipe-local"
         : "heuristic",
       confidence: robustAverage(semanticItems.map((item) => item.confidence)),
@@ -740,10 +740,19 @@ export function createToneLutV3(source, reference, strength) {
     const endpointProtection = 0.35 + 0.65
       * smoothstep(0.012, 0.07, input)
       * (1 - smoothstep(0.93, 0.995, input));
-    const maximumShift = 0.13 + endpointProtection * 0.07;
+    const midtoneWeight = 1 - Math.min(1, Math.abs(input - 0.5) * 2);
+    const highlightWeight = smoothstep(0.58, 0.92, input);
+    const shadowWeight = 1 - smoothstep(0.035, 0.24, input);
+    const maximumLift = (0.027 + midtoneWeight * 0.056)
+      * (1 - highlightWeight * 0.58)
+      * (1 - shadowWeight * 0.28);
+    const maximumDrop = (0.033 + midtoneWeight * 0.062)
+      * (1 - highlightWeight * 0.62)
+      * (1 - shadowWeight * 0.18);
+    const shift = mapped - input;
     const guardedMapped = input + Math.max(
-      -maximumShift,
-      Math.min(maximumShift, mapped - input),
+      -maximumDrop,
+      Math.min(maximumLift, shift),
     );
     const adjusted = input + (guardedMapped - input) * strength * endpointProtection;
     previous = Math.max(previous, clampUnit(adjusted));
@@ -851,7 +860,13 @@ function buildSemanticLookups(source, reference) {
   const sourceRegions = source?.semantic?.regions;
   const referenceRegions = reference?.semantic?.regions;
   if (!sourceRegions || !referenceRegions) return [];
+  const reliablePortraitMasks = source.semantic.model === "mediapipe-local"
+    && reference.semantic.model === "mediapipe-local";
   return SEMANTIC_PRIORITY.flatMap((id) => {
+    if (
+      ["skin", "person", "hair", "clothing"].includes(id)
+      && !reliablePortraitMasks
+    ) return [];
     const sourceRegion = sourceRegions[id];
     const referenceRegion = referenceRegions[id];
     if (
@@ -1242,7 +1257,7 @@ export function applyStyleProfile(
     }
   }
 
-  if (version3 && dimensions) {
+  if (version3 && dimensions && !dimensions.skipTexture) {
     applyTextureProfile(
       data,
       dimensions.width,

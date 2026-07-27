@@ -3,6 +3,7 @@ import { analyzePixels, applyStyleProfile } from "../src/colorEngine.js";
 import { applyStyleLuts } from "../src/lut3d.js";
 import { qualityReport } from "../src/qualityMetrics.js";
 import { buildStyleLuts } from "../src/styleLutEngine.js";
+import { applyTextureMatch } from "../src/textureEngine.js";
 
 const thresholds = JSON.parse(readFileSync(
   new URL("../validation/regression-thresholds.json", import.meta.url),
@@ -170,6 +171,14 @@ for (const scenario of scenarios) {
   const styleLuts = buildStyleLuts(sourceProfile, referenceProfile, SETTINGS);
   const v4Pixels = new Uint8ClampedArray(scene.source);
   applyStyleLuts(v4Pixels, WIDTH, HEIGHT, styleLuts);
+  applyTextureMatch(
+    v4Pixels,
+    WIDTH,
+    HEIGHT,
+    sourceProfile,
+    referenceProfile,
+    SETTINGS.strength / 100,
+  );
   const v3 = qualityReport(scene.reference, v3Pixels, WIDTH, HEIGHT, {
     skinMask: scene.skinMask,
   });

@@ -145,8 +145,16 @@ export function createHeuristicSemanticMasks(data, width, height, categoryMask =
       && saturation >= 0.08
       && saturation <= 0.72;
     const semanticSkin = category === 2 || category === 3;
-    masks.skin[pixel] = semanticSkin ? 1 : heuristicSkin ? 0.58 : 0;
-    masks.person[pixel] = category >= 1 && category <= 5 ? 1 : masks.skin[pixel] * 0.45;
+    masks.skin[pixel] = semanticSkin
+      ? 1
+      : !categoryMask && heuristicSkin
+        ? 0.58
+        : 0;
+    masks.person[pixel] = category >= 1 && category <= 5
+      ? 1
+      : !categoryMask
+        ? masks.skin[pixel] * 0.35
+        : 0;
     masks.hair[pixel] = category === 1 ? 1 : 0;
     masks.clothing[pixel] = category === 4 ? 1 : 0;
     masks.foliage[pixel] = hue >= 68
@@ -197,13 +205,29 @@ function summarizeMasks(masks) {
   return regions;
 }
 
-export async function analyzeSemanticCanvas(canvas) {
+function timeoutAfter(milliseconds) {
+  return new Promise((_, reject) => {
+    globalThis.setTimeout(
+      () => reject(new DOMException("语义模型加载超时，已切换快速分析", "TimeoutError")),
+      milliseconds,
+    );
+  });
+}
+
+export async function analyzeSemanticCanvas(
+  canvas,
+  { timeoutMs = 6500, heuristicOnly = false } = {},
+) {
   const context = canvas.getContext("2d", { willReadFrequently: true });
   const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
   let categoryMask = null;
   let model = "heuristic";
   try {
-    const segmenter = await getSegmenter();
+    if (heuristicOnly) throw new DOMException("快速分析", "AbortError");
+    const segmenter = await Promise.race([
+      getSegmenter(),
+      timeoutAfter(timeoutMs),
+    ]);
     const result = segmenter.segment(canvas);
     categoryMask = resampleCategoryMask(result.categoryMask, canvas.width, canvas.height);
     result.categoryMask?.close?.();

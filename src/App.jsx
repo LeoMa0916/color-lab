@@ -12,7 +12,16 @@ import {
   X,
 } from "@phosphor-icons/react";
 import LibRaw from "libraw-wasm";
-import { LogOut, UserRound } from "lucide-react";
+import {
+  CircleCheck,
+  Cloud,
+  CloudOff,
+  History,
+  LogOut,
+  RefreshCw,
+  Trash2,
+  UserRound,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   HUE_BANDS,
@@ -45,6 +54,15 @@ import {
   recommendedPreviewSide,
 } from "./renderBackend";
 import calibrationResults from "../validation/calibration-results.json";
+import {
+  cloudAssetUrl,
+  deleteCloudAsset,
+  deleteCloudStyle,
+  listCloudAssets,
+  listCloudStyles,
+  saveCloudStyle,
+  uploadCloudAsset,
+} from "./cloudClient";
 
 const IS_MOBILE = typeof navigator !== "undefined"
   && (/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints > 2);
@@ -55,6 +73,29 @@ const MAX_SIDE = recommendedPreviewSide(
   typeof navigator !== "undefined" ? navigator.deviceMemory || 4 : 4,
   IS_MOBILE,
 );
+
+function formatCloudSize(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(value >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${value} B`;
+}
+
+function formatCloudDate(value) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function canPreviewCloudAsset(asset) {
+  const extension = String(asset.name || "").toLowerCase().split(".").pop();
+  return String(asset.contentType || "").startsWith("image/")
+    && ["avif", "gif", "jpeg", "jpg", "png", "webp"].includes(extension);
+}
+
 const CHANNELS = [
   { id: "master", label: "总体", color: "#f5f5f7" },
   { id: "red", label: "红", color: "#ff5d57" },
@@ -145,19 +186,162 @@ function isRawFile(file) {
   return RAW_EXTENSIONS.has(fileExtension(file));
 }
 
-async function decodeRawCanvas(file, maxSide = MAX_SIDE, allowEmbeddedFallback = true) {
+function readFileBuffer(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onprogress = (event) => {
+      const total = event.lengthComputable ? event.total : file.size;
+      onProgress?.({
+        stage: "读取文件",
+        progress: total ? event.loaded / total * 0.55 : 0.08,
+        loaded: event.loaded,
+        total,
+      });
+    };
+    reader.onerror = () => reject(reader.error || new Error("文件读取失败"));
+    reader.onabort = () => reject(new DOMException("文件读取已取消", "AbortError"));
+    reader.onload = () => {
+      onProgress?.({
+        stage: "读取完成",
+        progress: 0.55,
+        loaded: file.size,
+        total: file.size,
+      });
+      resolve(new Uint8Array(reader.result));
+    };
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function encodedRasterDimensions(bytes, type) {
+  if (type === "image/png" && bytes.length >= 24) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return { width: view.getUint32(16), height: view.getUint32(20) };
+  }
+  if (type !== "image/jpeg" || bytes.length < 12) return null;
+  let offset = 2;
+  while (offset + 9 < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = bytes[offset + 1];
+    const size = (bytes[offset + 2] << 8) + bytes[offset + 3];
+    if (
+      [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]
+        .includes(marker)
+    ) {
+      return {
+        height: (bytes[offset + 5] << 8) + bytes[offset + 6],
+        width: (bytes[offset + 7] << 8) + bytes[offset + 8],
+      };
+    }
+    if (!size || size < 2) break;
+    offset += size + 2;
+  }
+  return null;
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error("预览图生成失败")),
+      type,
+      quality,
+    );
+  });
+}
+
+async function decodeRasterPreview(file, bytes, maxSide, onProgress) {
+  const blob = new Blob([bytes], { type: file.type });
+  const dimensions = encodedRasterDimensions(bytes, file.type);
+  const bitmapOptions = { imageOrientation: "from-image" };
+  if (dimensions?.width && dimensions?.height) {
+    const scale = Math.min(1, maxSide / Math.max(dimensions.width, dimensions.height));
+    bitmapOptions.resizeWidth = Math.max(1, Math.round(dimensions.width * scale));
+    bitmapOptions.resizeHeight = Math.max(1, Math.round(dimensions.height * scale));
+    bitmapOptions.resizeQuality = "high";
+  }
+  onProgress?.({ stage: "解码并缩放预览", progress: 0.68, loaded: file.size, total: file.size });
+  let bitmap;
+  if (typeof createImageBitmap === "function") {
+    bitmap = await withTimeout(
+      createImageBitmap(blob, bitmapOptions),
+      IS_MOBILE ? 12000 : 30000,
+      "照片解码超时，请尝试尺寸较小的文件",
+    );
+  } else {
+    const url = URL.createObjectURL(blob);
+    try {
+      bitmap = await loadImage(url);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  const canvas = document.createElement("canvas");
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const decodedWidth = bitmap.width;
+  const decodedHeight = bitmap.height;
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+  onProgress?.({ stage: "编码工作预览", progress: 0.9, loaded: file.size, total: file.size });
+  const previewType = file.type === "image/png" ? "image/png" : "image/jpeg";
+  const preview = await canvasToBlob(canvas, previewType, 0.94);
+  onProgress?.({ stage: "预览已就绪", progress: 1, loaded: file.size, total: file.size });
+  return {
+    url: URL.createObjectURL(preview),
+    raw: false,
+    sourceFile: file,
+    metadata: {
+      width: dimensions?.width || decodedWidth,
+      height: dimensions?.height || decodedHeight,
+      preview: "browser-color-managed",
+      bitDepth: 8,
+      workingSpace: "sRGB → Linear ProPhoto RGB",
+    },
+  };
+}
+
+async function decodeRawCanvas(
+  file,
+  maxSide = MAX_SIDE,
+  allowEmbeddedFallback = true,
+  { bytes = null, onProgress } = {},
+) {
   const raw = new LibRaw();
   try {
-    await raw.open(new Uint8Array(await file.arrayBuffer()), {
-      useCameraWb: true,
-      useCameraMatrix: 3,
-      outputColor: 4,
-      outputBps: 16,
-      halfSize: false,
-      noAutoBright: true,
-      gamm: [1, 1],
-      highlight: 5,
-      userQual: 3,
+    const sourceBytes = bytes || await readFileBuffer(file, onProgress);
+    onProgress?.({
+      stage: "初始化 RAW 解码器",
+      progress: 0.62,
+      loaded: file.size,
+      total: file.size,
+    });
+    await withTimeout(
+      raw.open(sourceBytes, {
+        useCameraWb: true,
+        useCameraMatrix: 3,
+        outputColor: 4,
+        outputBps: 16,
+        halfSize: false,
+        noAutoBright: true,
+        gamm: [1, 1],
+        highlight: 5,
+        userQual: 3,
+      }),
+      IS_MOBILE ? 12000 : 45000,
+      "RAW 初始化超时",
+    );
+    onProgress?.({
+      stage: "读取 RAW 元数据",
+      progress: 0.69,
+      loaded: file.size,
+      total: file.size,
     });
     const metadata = await raw.metadata(false);
     const rawWidth = metadata?.width || metadata?.raw_width || 0;
@@ -166,7 +350,17 @@ async function decodeRawCanvas(file, maxSide = MAX_SIDE, allowEmbeddedFallback =
       throw new Error("这张超大 RAW 建议在桌面 Chrome 或 Edge 中处理");
     }
     try {
-      const decoded = await raw.imageData();
+      onProgress?.({
+        stage: "解码 16-bit RAW",
+        progress: 0.74,
+        loaded: file.size,
+        total: file.size,
+      });
+      const decoded = await withTimeout(
+        raw.imageData(),
+        IS_MOBILE ? 22000 : 90000,
+        "完整 RAW 解码超时",
+      );
       if (!decoded?.data || !decoded.width || !decoded.height) {
         throw new Error("RAW 文件没有可用的图像数据");
       }
@@ -188,6 +382,12 @@ async function decodeRawCanvas(file, maxSide = MAX_SIDE, allowEmbeddedFallback =
           0,
         );
       }
+      onProgress?.({
+        stage: "生成 RAW 工作预览",
+        progress: 0.94,
+        loaded: file.size,
+        total: file.size,
+      });
       return {
         canvas,
         metadata: {
@@ -230,27 +430,37 @@ async function decodeRawCanvas(file, maxSide = MAX_SIDE, allowEmbeddedFallback =
   }
 }
 
-async function rawToAsset(file) {
-  const { canvas, metadata } = await decodeRawCanvas(file, MAX_SIDE, true);
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (!blob) throw new Error("RAW 预览生成失败");
-  return {
-    url: URL.createObjectURL(blob),
-    raw: true,
-    sourceFile: file,
-    metadata,
-  };
-}
-
-async function fileToAsset(file) {
-  if (isRawFile(file)) return rawToAsset(file);
+async function fileToAsset(file, { onProgress } = {}) {
+  const bytes = await readFileBuffer(file, onProgress);
+  if (isRawFile(file)) {
+    const { canvas, metadata } = await decodeRawCanvas(
+      file,
+      MAX_SIDE,
+      true,
+      { bytes, onProgress },
+    );
+    onProgress?.({
+      stage: "编码 RAW 工作预览",
+      progress: 0.96,
+      loaded: file.size,
+      total: file.size,
+    });
+    const blob = await canvasToBlob(canvas, "image/png");
+    onProgress?.({
+      stage: "RAW 预览已就绪",
+      progress: 1,
+      loaded: file.size,
+      total: file.size,
+    });
+    return {
+      url: URL.createObjectURL(blob),
+      raw: true,
+      sourceFile: file,
+      metadata,
+    };
+  }
   if (!file.type.startsWith("image/")) throw new Error("不支持的文件格式");
-  return {
-    url: URL.createObjectURL(file),
-    raw: false,
-    sourceFile: file,
-    metadata: { preview: "browser-color-managed", bitDepth: 8, workingSpace: "sRGB → Linear ProPhoto RGB" },
-  };
+  return decodeRasterPreview(file, bytes, MAX_SIDE, onProgress);
 }
 
 function drawSized(image, canvas, maxSide = MAX_SIDE) {
@@ -280,6 +490,19 @@ function makeAnalysisCanvas(source, maxSide = ANALYSIS_MAX_SIDE) {
 function waitForPaint() {
   return new Promise((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+function withTimeout(promise, milliseconds, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = globalThis.setTimeout(
+        () => reject(new DOMException(message, "TimeoutError")),
+        milliseconds,
+      );
+    }),
+  ]).finally(() => globalThis.clearTimeout(timer));
 }
 
 function makeCurvePreviewBase(base) {
@@ -347,28 +570,52 @@ function renderCurveBase(base, curves, canvas, outputRef) {
   return output;
 }
 
-async function analyzeUrl(url) {
+async function analyzeUrl(url, { onStage } = {}) {
+  onStage?.("打开工作预览", 0.06);
+  await waitForPaint();
   const image = await loadImage(url);
   const canvas = makeAnalysisCanvas(image);
   const context = canvas.getContext("2d", { willReadFrequently: true });
-  const semanticMasks = await analyzeSemanticCanvas(canvas);
+  onStage?.("识别人像与画面区域", 0.18);
+  const semanticMasks = await analyzeSemanticCanvas(canvas, {
+    timeoutMs: IS_MOBILE ? 2600 : 6500,
+  });
+  onStage?.(
+    semanticMasks.model === "mediapipe-local"
+      ? "语义区域识别完成"
+      : "已切换快速区域分析",
+    0.56,
+  );
+  await waitForPaint();
   const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  const photoId = `analysis:${url}:${performance.now()}:${Math.random()}`;
   try {
-    return await engineWorker.run(
-      "analyze",
-      {
-        data,
-        options: { width: canvas.width, height: canvas.height, semanticMasks },
-      },
-      { photoId: `analysis:${url}:${performance.now()}:${Math.random()}` },
+    onStage?.("建立影调、七色与质感档案", 0.68);
+    const profile = await withTimeout(
+      engineWorker.run(
+        "analyze",
+        {
+          data,
+          options: { width: canvas.width, height: canvas.height, semanticMasks },
+        },
+        { photoId },
+      ),
+      IS_MOBILE ? 9000 : 18000,
+      "颜色分析超时",
     );
+    onStage?.("颜色档案已完成", 1);
+    return profile;
   } catch (error) {
     if (error?.name === "AbortError") throw error;
-    return analyzePixels(data, {
+    engineWorker.cancel(photoId);
+    onStage?.("使用兼容模式完成颜色档案", 0.82);
+    const profile = analyzePixels(data, {
       width: canvas.width,
       height: canvas.height,
       semanticMasks,
     });
+    onStage?.("颜色档案已完成", 1);
+    return profile;
   }
 }
 
@@ -1070,7 +1317,7 @@ function StyleAnalysis({ profile }) {
   );
 }
 
-export function App({ onLogout, username = "本机用户" }) {
+export function App({ onLogout, session, username = "本机用户" }) {
   const [references, setReferences] = useState([]);
   const [referenceStats, setReferenceStats] = useState(null);
   const [targets, setTargets] = useState([]);
@@ -1091,6 +1338,15 @@ export function App({ onLogout, username = "本机用户" }) {
   const [exported, setExported] = useState(false);
   const [importErrors, setImportErrors] = useState([]);
   const [savedStyles, setSavedStyles] = useState([]);
+  const [cloudAssets, setCloudAssets] = useState([]);
+  const [cloudLibraryOpen, setCloudLibraryOpen] = useState(false);
+  const [cloudDeleteCandidate, setCloudDeleteCandidate] = useState(null);
+  const [cloudSyncEnabled, setCloudSyncEnabled] = useState(session?.storageMode === "cloud");
+  const [cloudStatus, setCloudStatus] = useState({
+    state: session?.storageMode === "cloud" ? "loading" : "local",
+    message: session?.storageMode === "cloud" ? "正在读取云端历史" : "本机预览不会上传照片",
+  });
+  const [cloudUploading, setCloudUploading] = useState(0);
   const [styleDialogOpen, setStyleDialogOpen] = useState(false);
   const [styleName, setStyleName] = useState("");
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
@@ -1116,20 +1372,161 @@ export function App({ onLogout, username = "本机用户" }) {
   const settings = active?.settings || defaultSettings();
   const palette = useMemo(() => makePalette(referenceStats), [referenceStats]);
   const isReady = references.length > 0 && referenceStats && active;
+  const cloudEnabled = session?.storageMode === "cloud";
 
   useEffect(() => {
     let cancelled = false;
-    loadStyles()
-      .then((styles) => {
-        if (!cancelled) setSavedStyles(styles);
+    Promise.all([
+      loadStyles(),
+      cloudEnabled ? listCloudStyles().catch(() => []) : Promise.resolve([]),
+    ])
+      .then(async ([localStyles, cloudStyles]) => {
+        if (cancelled) return;
+        const merged = new Map();
+        [...cloudStyles, ...localStyles].forEach((style) => {
+          if (!merged.has(style.id)) merged.set(style.id, style);
+        });
+        const styles = [...merged.values()]
+          .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0));
+        setSavedStyles(styles);
+        await Promise.allSettled(cloudStyles.map((style) => saveStyle(style)));
+        if (cloudEnabled) {
+          const cloudIds = new Set(cloudStyles.map((style) => style.id));
+          await Promise.allSettled(
+            localStyles
+              .filter((style) => !cloudIds.has(style.id))
+              .map((style) => saveCloudStyle(style)),
+          );
+        }
       })
       .catch(() => {
-        if (!cancelled) setImportErrors(["无法读取本机滤镜数据库"]);
+        if (!cancelled) setImportErrors(["无法读取滤镜数据库"]);
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [cloudEnabled]);
+
+  useEffect(() => {
+    if (!cloudEnabled) return undefined;
+    let cancelled = false;
+    listCloudAssets()
+      .then((assets) => {
+        if (cancelled) return;
+        setCloudAssets(assets);
+        setCloudStatus({
+          state: "ready",
+          message: assets.length ? `已同步 ${assets.length} 张云端照片` : "云端资料库已就绪",
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setCloudStatus({
+          state: "error",
+          message: error?.message || "无法读取云端历史",
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudEnabled]);
+
+  async function refreshCloudLibrary() {
+    if (!cloudEnabled) return;
+    setCloudStatus({ state: "loading", message: "正在刷新云端历史" });
+    try {
+      const assets = await listCloudAssets();
+      setCloudAssets(assets);
+      setCloudStatus({
+        state: "ready",
+        message: assets.length ? `已同步 ${assets.length} 张云端照片` : "云端资料库已就绪",
+      });
+    } catch (error) {
+      setCloudStatus({
+        state: "error",
+        message: error?.message || "无法刷新云端历史",
+      });
+    }
+  }
+
+  async function syncDecodedFiles(decoded, kind) {
+    if (!cloudEnabled || !cloudSyncEnabled || !decoded.length) return;
+    const pending = decoded.filter(({ file }) =>
+      !cloudAssets.some((asset) =>
+        asset.kind === kind && asset.name === file.name && asset.size === file.size));
+    if (!pending.length) {
+      setCloudStatus({ state: "ready", message: "这些照片已存在于云端历史" });
+      return;
+    }
+    setCloudUploading(pending.length);
+    setCloudStatus({ state: "uploading", message: `正在上传 0/${pending.length}` });
+    const uploaded = [];
+    const errors = [];
+    for (let index = 0; index < pending.length; index += 1) {
+      const { file } = pending[index];
+      try {
+        uploaded.push(await uploadCloudAsset(file, kind));
+      } catch (error) {
+        errors.push(`${file.name}：${error?.message || "云端上传失败"}`);
+      }
+      setCloudUploading(Math.max(0, pending.length - index - 1));
+      setCloudStatus({
+        state: errors.length ? "error" : "uploading",
+        message: `已完成 ${index + 1}/${pending.length}`,
+      });
+    }
+    if (uploaded.length) {
+      setCloudAssets((items) => [
+        ...uploaded,
+        ...items.filter((item) => !uploaded.some((next) => next.id === item.id)),
+      ]);
+    }
+    setCloudStatus({
+      state: errors.length ? "error" : "ready",
+      message: errors.length
+        ? `${uploaded.length} 张已同步，${errors.length} 张失败`
+        : `${uploaded.length} 张照片已安全同步`,
+    });
+    if (errors.length) setImportErrors((items) => [...errors, ...items].slice(0, 8));
+  }
+
+  async function restoreCloudAsset(asset) {
+    setCloudStatus({ state: "loading", message: `正在取回 ${asset.name}` });
+    try {
+      const response = await fetch(cloudAssetUrl(asset.id), {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("无法下载这张云端照片");
+      const blob = await response.blob();
+      const file = new File([blob], asset.name, {
+        type: asset.contentType || blob.type || "application/octet-stream",
+        lastModified: asset.createdAt,
+      });
+      if (asset.kind === "reference") await addReferences([file]);
+      else await addTargets([file]);
+      setCloudLibraryOpen(false);
+      setCloudStatus({ state: "ready", message: `${asset.name} 已恢复到工作台` });
+    } catch (error) {
+      setCloudStatus({
+        state: "error",
+        message: error?.message || "无法恢复云端照片",
+      });
+    }
+  }
+
+  async function removeCloudAsset(asset) {
+    try {
+      await deleteCloudAsset(asset.id);
+      setCloudAssets((items) => items.filter((item) => item.id !== asset.id));
+      setCloudDeleteCandidate(null);
+      setCloudStatus({ state: "ready", message: `${asset.name} 已从云端删除` });
+    } catch (error) {
+      setCloudStatus({
+        state: "error",
+        message: error?.message || "无法删除云端照片",
+      });
+    }
+  }
 
   async function decodeFiles(files, limit) {
     const selected = [...files].slice(0, limit);
@@ -1138,13 +1535,36 @@ export function App({ onLogout, username = "本机用户" }) {
     for (let fileIndex = 0; fileIndex < selected.length; fileIndex += 1) {
       const file = selected[fileIndex];
       try {
+        await waitForPaint();
         setBusyTask((task) => task ? {
           ...task,
-          label: isRawFile(file) ? `正在解码 RAW · ${file.name}` : `正在读取 · ${file.name}`,
-          progress: Math.round((fileIndex / Math.max(1, selected.length)) * 20),
+          label: file.name,
+          stage: isRawFile(file) ? "准备 RAW 文件" : "准备照片",
+          current: fileIndex + 1,
+          total: selected.length,
+          bytesLoaded: 0,
+          bytesTotal: file.size,
+          progress: Math.round((fileIndex / Math.max(1, selected.length)) * 30),
         } : task);
         setDecodeStatus(isRawFile(file) ? `正在解码 RAW · ${file.name}` : `正在读取 · ${file.name}`);
-        const asset = await fileToAsset(file);
+        const asset = await fileToAsset(file, {
+          onProgress: ({ stage, progress, loaded, total }) => {
+            const overall = (
+              fileIndex + Math.min(1, Math.max(0, progress))
+            ) / Math.max(1, selected.length);
+            setBusyTask((task) => task ? {
+              ...task,
+              label: file.name,
+              stage,
+              current: fileIndex + 1,
+              total: selected.length,
+              bytesLoaded: loaded,
+              bytesTotal: total || file.size,
+              progress: Math.max(task.progress || 0, Math.round(overall * 30)),
+            } : task);
+            setDecodeStatus(`${stage} · ${file.name}`);
+          },
+        });
         decoded.push({ file, asset });
       } catch (error) {
         errors.push(`${file.name}：${error.message || "无法解码"}`);
@@ -1153,6 +1573,50 @@ export function App({ onLogout, username = "本机用户" }) {
     setDecodeStatus("");
     setImportErrors(errors);
     return decoded;
+  }
+
+  async function analyzeItemsSequentially(items, subject) {
+    const stats = [];
+    const total = Math.max(1, items.length);
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (item.stats) {
+        stats.push(item.stats);
+        setBusyTask((task) => task ? {
+          ...task,
+          label: item.name,
+          stage: `${subject}已有颜色档案`,
+          current: index + 1,
+          total,
+          bytesLoaded: null,
+          bytesTotal: null,
+          progress: 30 + Math.round((index + 1) / total * 68),
+        } : task);
+        continue;
+      }
+      await waitForPaint();
+      const profile = await analyzeUrl(item.url, {
+        onStage: (stage, localProgress) => {
+          const progress = 30 + Math.round(
+            (index + Math.min(1, Math.max(0, localProgress))) / total * 68,
+          );
+          setBusyTask((task) => task ? {
+            ...task,
+            label: item.name,
+            stage,
+            current: index + 1,
+            total,
+            bytesLoaded: null,
+            bytesTotal: null,
+            progress: Math.max(task.progress || 0, progress),
+          } : task);
+          setDecodeStatus(`${stage} · ${item.name}`);
+        },
+      });
+      stats.push(profile);
+    }
+    setDecodeStatus("");
+    return stats;
   }
 
   function updateActiveSettings(patch) {
@@ -1231,8 +1695,19 @@ export function App({ onLogout, username = "本机用户" }) {
     if (!referenceStats || !styleName.trim()) return;
     const style = await createStylePayload(styleName.trim());
     const replaced = savedStyles.find((item) => item.name === style.name);
-    if (replaced) await deleteStyle(replaced.id);
+    if (replaced) {
+      await deleteStyle(replaced.id);
+      if (cloudEnabled) await deleteCloudStyle(replaced.id).catch(() => {});
+    }
     await saveStyle(style);
+    if (cloudEnabled) {
+      await saveCloudStyle(style).catch((error) => {
+        setImportErrors((items) => [
+          `滤镜已保存到本机，但云端同步失败：${error?.message || "请稍后重试"}`,
+          ...items,
+        ].slice(0, 8));
+      });
+    }
     setSavedStyles([
       style,
       ...savedStyles.filter((item) => item.name !== style.name),
@@ -1255,6 +1730,7 @@ export function App({ onLogout, username = "本机用户" }) {
 
   async function removeSavedStyle(id) {
     await deleteStyle(id);
+    if (cloudEnabled) await deleteCloudStyle(id).catch(() => {});
     setSavedStyles(savedStyles.filter((item) => item.id !== id));
   }
 
@@ -1262,6 +1738,7 @@ export function App({ onLogout, username = "本机用户" }) {
     try {
       const style = deserializeClstyle(await file.text());
       await saveStyle(style);
+      if (cloudEnabled) await saveCloudStyle(style);
       setSavedStyles((items) => [
         style,
         ...items.filter((item) => item.id !== style.id && item.name !== style.name),
@@ -1300,7 +1777,12 @@ export function App({ onLogout, username = "本机用户" }) {
     const extension = exportOptions.format === "jpeg" ? "jpg" : exportOptions.format;
     setIsExporting(true);
     setProcessing(true);
-    setBusyTask({ kind: "export", label: "正在准备原始图片", progress: 2 });
+    setBusyTask({
+      kind: "export",
+      label: active.name,
+      stage: "正在准备原始图片",
+      progress: 2,
+    });
     await waitForPaint();
     try {
       let source;
@@ -1309,25 +1791,71 @@ export function App({ onLogout, username = "本机用户" }) {
           active.sourceFile,
           longEdge,
           false,
+          {
+            onProgress: ({ stage, progress }) => setBusyTask({
+              kind: "export",
+              label: active.name,
+              stage,
+              progress: Math.max(2, Math.round(progress * 7)),
+            }),
+          },
         )).canvas;
       } else {
-        const image = await loadImage(active.url);
         source = document.createElement("canvas");
+        const originalWidth = active.metadata?.width;
+        const originalHeight = active.metadata?.height;
+        const canResizeBitmap = active.sourceFile
+          && typeof createImageBitmap === "function"
+          && originalWidth
+          && originalHeight;
+        let image;
+        if (canResizeBitmap) {
+          const scale = Number.isFinite(longEdge)
+            ? Math.min(1, longEdge / Math.max(originalWidth, originalHeight))
+            : 1;
+          setBusyTask({
+            kind: "export",
+            label: active.name,
+            stage: "正在解码原始分辨率",
+            progress: 4,
+          });
+          image = await createImageBitmap(active.sourceFile, {
+            imageOrientation: "from-image",
+            resizeWidth: Math.max(1, Math.round(originalWidth * scale)),
+            resizeHeight: Math.max(1, Math.round(originalHeight * scale)),
+            resizeQuality: "high",
+          });
+        } else {
+          image = await loadImage(active.url);
+        }
         const scale = Number.isFinite(longEdge)
-          ? longEdge / Math.max(image.naturalWidth, image.naturalHeight)
+          ? Math.min(1, longEdge / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height))
           : 1;
-        source.width = Math.max(1, Math.round(image.naturalWidth * scale));
-        source.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        source.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+        source.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
         const context = source.getContext("2d", { willReadFrequently: true });
         context.imageSmoothingEnabled = true;
         context.imageSmoothingQuality = "high";
         context.drawImage(image, 0, 0, source.width, source.height);
+        image.close?.();
       }
 
-      setBusyTask({ kind: "export", label: "正在识别画面区域", progress: 7 });
+      setBusyTask({
+        kind: "export",
+        label: active.name,
+        stage: "正在识别画面区域",
+        progress: 7,
+      });
       const analysisCanvas = makeAnalysisCanvas(source);
-      const semanticMasks = await analyzeSemanticCanvas(analysisCanvas);
-      setBusyTask({ kind: "export", label: "正在读取完整像素", progress: 9 });
+      const semanticMasks = await analyzeSemanticCanvas(analysisCanvas, {
+        timeoutMs: IS_MOBILE ? 2600 : 6500,
+      });
+      setBusyTask({
+        kind: "export",
+        label: active.name,
+        stage: "正在读取完整像素",
+        progress: 9,
+      });
       await waitForPaint();
       const context = source.getContext("2d", { willReadFrequently: true });
       const imageData = context.getImageData(0, 0, source.width, source.height);
@@ -1378,7 +1906,8 @@ export function App({ onLogout, username = "本机用户" }) {
           onProgress: (progress) =>
             setBusyTask({
               kind: "export",
-              label: progress.label,
+              label: active.name,
+              stage: progress.label,
               progress: progress.percent,
             }),
         },
@@ -1441,7 +1970,12 @@ export function App({ onLogout, username = "本机用户" }) {
 
   async function addReferences(files) {
     setAnalyzing(true);
-    setBusyTask({ kind: "analysis", label: "正在读取参考照片", progress: 0 });
+    setBusyTask({
+      kind: "analysis",
+      label: "参考照片",
+      stage: "正在建立导入任务",
+      progress: 0,
+    });
     try {
       const decoded = await decodeFiles(files, Math.max(0, 8 - references.length));
       const next = decoded.map(({ file, asset }) => ({
@@ -1452,24 +1986,11 @@ export function App({ onLogout, username = "本机用户" }) {
       if (!next.length) return;
       const all = [...references, ...next].slice(0, 8);
       setReferences(all);
-      let completed = 0;
-      const stats = await Promise.all(all.map(async (item) => {
-        if (item.stats) {
-          completed += 1;
-          return item.stats;
-        }
-        const profile = await analyzeUrl(item.url);
-        completed += 1;
-        setBusyTask({
-          kind: "analysis",
-          label: `正在分析参考照片 ${completed}/${all.length}`,
-          progress: 20 + Math.round(completed / all.length * 76),
-        });
-        return profile;
-      }));
+      const stats = await analyzeItemsSequentially(all, "参考照片");
       const profiled = all.map((item, index) => ({ ...item, stats: stats[index] }));
       setReferences(profiled);
       setReferenceStats(averageProfiles(stats));
+      void syncDecodedFiles(decoded, "reference");
     } finally {
       setAnalyzing(false);
       setBusyTask(null);
@@ -1478,7 +1999,12 @@ export function App({ onLogout, username = "本机用户" }) {
 
   async function addTargets(files) {
     setAnalyzing(true);
-    setBusyTask({ kind: "analysis", label: "正在读取待调色照片", progress: 0 });
+    setBusyTask({
+      kind: "analysis",
+      label: "待调色照片",
+      stage: "正在建立导入任务",
+      progress: 0,
+    });
     try {
       const decoded = await decodeFiles(files, Math.max(0, 20 - targets.length));
       const next = decoded.map(({ file, asset }) => ({
@@ -1489,20 +2015,11 @@ export function App({ onLogout, username = "本机用户" }) {
         stats: null,
       }));
       if (!next.length) return;
-      let completed = 0;
-      const stats = await Promise.all(next.map(async (item) => {
-        const profile = await analyzeUrl(item.url);
-        completed += 1;
-        setBusyTask({
-          kind: "analysis",
-          label: `正在分析待调色照片 ${completed}/${next.length}`,
-          progress: 20 + Math.round(completed / next.length * 76),
-        });
-        return profile;
-      }));
+      const stats = await analyzeItemsSequentially(next, "待调色照片");
       const complete = next.map((item, index) => ({ ...item, stats: stats[index] }));
       setTargets((items) => [...items, ...complete].slice(0, 20));
       setActiveId((value) => value || complete[0].id);
+      void syncDecodedFiles(decoded, "target");
     } finally {
       setAnalyzing(false);
       setBusyTask(null);
@@ -1631,6 +2148,7 @@ export function App({ onLogout, username = "本机用户" }) {
         if (!semanticMasks) {
           semanticMasks = await analyzeSemanticCanvas(
             makeAnalysisCanvas(originalCanvas.current),
+            { timeoutMs: IS_MOBILE ? 2600 : 6500 },
           );
           if (cancelled) return;
           semanticMaskCache.current.set(maskKey, semanticMasks);
@@ -1806,8 +2324,22 @@ export function App({ onLogout, username = "本机用户" }) {
         <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 4</small></div>
         <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
         <div className="header-actions">
+          <GlassButton
+            className={`cloud-library-button ${cloudStatus.state}`}
+            disabled={!cloudEnabled}
+            onClick={() => setCloudLibraryOpen(true)}
+            title={cloudEnabled ? cloudStatus.message : "本机预览账户不连接云端"}
+          >
+            {cloudUploading
+              ? <RefreshCw className="spin" size={14} />
+              : cloudStatus.state === "ready"
+                ? <CircleCheck size={15} />
+                : <History size={15} />}
+            <span>云端历史</span>
+            {!!cloudUploading && <b>{cloudUploading}</b>}
+          </GlassButton>
           <div className="editor-account glass-surface" title={`当前账户：${username}`}>
-            <UserRound size={14} />
+            {cloudEnabled ? <Cloud size={14} /> : <UserRound size={14} />}
             <span>{username}</span>
             <button type="button" onClick={onLogout} aria-label="退出登录" title="退出登录">
               <LogOut size={14} />
@@ -1841,10 +2373,24 @@ export function App({ onLogout, username = "本机用户" }) {
             </div>
             <div>
               <strong>{busyTask.label}</strong>
-              <span>
+              <small className="global-progress-stage">
+                {busyTask.stage || (busyTask.kind === "export" ? "完整分辨率导出" : "本地颜色分析")}
+              </small>
+              {(busyTask.current || busyTask.bytesTotal) && (
+                <span className="global-progress-meta">
+                  {busyTask.current ? `第 ${busyTask.current}/${busyTask.total} 张` : ""}
+                  {busyTask.current && busyTask.bytesTotal ? " · " : ""}
+                  {busyTask.bytesTotal
+                    ? `${formatCloudSize(busyTask.bytesLoaded || 0)} / ${formatCloudSize(busyTask.bytesTotal)}`
+                    : ""}
+                </span>
+              )}
+              <span className="global-progress-privacy">
                 {busyTask.kind === "export"
                   ? "完整分辨率处理在后台进行，页面仍可保持响应"
-                  : "照片仅在浏览器本地分析，不会上传服务器"}
+                  : cloudSyncEnabled && cloudEnabled
+                    ? "分析仍在浏览器本地完成；原始文件会按你的云端同步设置私有保存"
+                    : "照片仅在浏览器本地分析，当前不会上传云端"}
               </span>
               <div className="global-progress-track">
                 <i style={{ transform: `scaleX(${Math.max(2, busyTask.progress || 0) / 100})` }} />
@@ -2110,11 +2656,116 @@ export function App({ onLogout, username = "本机用户" }) {
           <button onClick={() => setImportErrors([])}><X size={13} /></button>
         </div>
       )}
+      {cloudLibraryOpen && (
+        <div className="modal-backdrop" onMouseDown={() => {
+          setCloudLibraryOpen(false);
+          setCloudDeleteCandidate(null);
+        }}>
+          <section
+            className="modal cloud-library-modal glass-panel"
+            aria-label="云端历史"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-title">
+              <div><Cloud size={18} /><h2>云端历史</h2></div>
+              <GlassButton className="mini-button" onClick={() => {
+                setCloudLibraryOpen(false);
+                setCloudDeleteCandidate(null);
+              }}>
+                <X size={14} />
+              </GlassButton>
+            </div>
+            <div className={`cloud-library-status ${cloudStatus.state}`}>
+              <span>
+                {cloudStatus.state === "ready"
+                  ? <CircleCheck size={17} />
+                  : cloudStatus.state === "error"
+                    ? <CloudOff size={17} />
+                    : <RefreshCw className={cloudStatus.state === "loading" ? "spin" : ""} size={17} />}
+              </span>
+              <div>
+                <strong>{cloudStatus.message}</strong>
+                <small>私有文件只会通过当前账号读取、恢复或删除</small>
+              </div>
+              <GlassButton className="cloud-refresh" onClick={refreshCloudLibrary}>
+                <RefreshCw size={13} />刷新
+              </GlassButton>
+            </div>
+            <label className="cloud-sync-toggle">
+              <span>
+                <strong>新照片自动同步</strong>
+                <small>关闭后仍可在浏览器本地处理，不影响已同步内容</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={cloudSyncEnabled}
+                onChange={(event) => setCloudSyncEnabled(event.target.checked)}
+              />
+              <i aria-hidden="true" />
+            </label>
+            <div className="cloud-library-heading">
+              <span>照片记录</span>
+              <b>{cloudAssets.length}</b>
+            </div>
+            <div className="cloud-asset-grid">
+              {cloudAssets.map((asset) => (
+                <article key={asset.id} className="cloud-asset-card">
+                  <div className="cloud-asset-preview">
+                    {canPreviewCloudAsset(asset)
+                      ? <img src={cloudAssetUrl(asset.id)} alt="" loading="lazy" />
+                      : <span><ImageSquare size={24} /><small>RAW</small></span>}
+                    <b>{asset.kind === "reference" ? "参考" : "目标"}</b>
+                  </div>
+                  <div className="cloud-asset-copy">
+                    <strong title={asset.name}>{asset.name}</strong>
+                    <small>{formatCloudSize(asset.size)} · {formatCloudDate(asset.createdAt)}</small>
+                  </div>
+                  <div className="cloud-asset-actions">
+                    <GlassButton onClick={() => restoreCloudAsset(asset)}>
+                      <ArrowCounterClockwise size={12} />恢复
+                    </GlassButton>
+                    <button
+                      type="button"
+                      title="从云端删除"
+                      aria-label={`从云端删除 ${asset.name}`}
+                      onClick={() => setCloudDeleteCandidate(asset)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </article>
+              ))}
+              {!cloudAssets.length && (
+                <div className="cloud-library-empty">
+                  <Cloud size={28} />
+                  <strong>还没有云端照片</strong>
+                  <span>保持自动同步开启，下一次导入参考图或待调色照片后会出现在这里。</span>
+                </div>
+              )}
+            </div>
+            {cloudDeleteCandidate && (
+              <div className="cloud-delete-confirm" role="alertdialog" aria-modal="true" aria-label="确认删除云端照片">
+                <div>
+                  <Trash2 size={17} />
+                  <span>
+                    <strong>从云端永久删除？</strong>
+                    <small>{cloudDeleteCandidate.name}</small>
+                  </span>
+                </div>
+                <div>
+                  <GlassButton onClick={() => setCloudDeleteCandidate(null)}>取消</GlassButton>
+                  <button type="button" onClick={() => removeCloudAsset(cloudDeleteCandidate)}>删除</button>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
       {styleDialogOpen && (
         <div className="modal-backdrop" onMouseDown={() => setStyleDialogOpen(false)}>
           <section className="modal glass-panel" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-title"><div><Sparkle size={18} /><h2>保存参考风格</h2></div><GlassButton className="mini-button" onClick={() => setStyleDialogOpen(false)}><X size={14} /></GlassButton></div>
-            <p>V4 全局与局部 LUT、语义区域、光线、质感和参数会写入本机 IndexedDB，不占用 localStorage。</p>
+            <p>V4 全局与局部 LUT、语义区域、光线、质感和参数会先写入本机 IndexedDB；云端账户会同步完整风格，供其他设备调用。</p>
             <label className="field-label">滤镜名称<input autoFocus value={styleName} placeholder="例如：加州暖阳" onChange={(event) => setStyleName(event.target.value)} /></label>
             <div className="dialog-actions"><GlassButton onClick={() => setStyleDialogOpen(false)}>取消</GlassButton><button className="primary-button" disabled={!styleName.trim()} onClick={saveReferenceStyle}>保存滤镜</button></div>
           </section>

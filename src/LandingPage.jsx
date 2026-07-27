@@ -1,24 +1,34 @@
 import {
+  Aperture,
+  ArrowLeft,
   ArrowRight,
   CheckCircle2,
+  Cloud,
+  Database,
   Eye,
   EyeOff,
+  Github,
+  Image as ImageIcon,
+  Layers3,
   LoaderCircle,
   LockKeyhole,
+  Mail,
   Menu,
+  Palette,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   UserPlus,
   UserRound,
   X,
 } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
-  loginLocalAccount,
-  registerLocalAccount,
+  loginCloudAccount,
+  registerCloudAccount,
   validatePassword,
   validateUsername,
-} from "./authStore";
+} from "./cloudClient";
 import "./landing.css";
 
 const VIDEO_URL = "/media/color-lab-hero.mp4";
@@ -27,22 +37,14 @@ const NAV_ITEMS = [
   { label: "首页", action: "home" },
   { label: "能力", action: "capability" },
   { label: "隐私", action: "privacy" },
-  { label: "工作台", action: "workspace" },
+  { label: "联系方式", action: "contact" },
 ];
 
-const FEATURE_COPY = {
-  capability: {
-    title: "参考驱动，而非固定滤镜",
-    body: "分析影调、七色色彩、语义区域、光线与质感，再生成可编辑的风格档案。",
-  },
-  privacy: {
-    title: "照片始终留在你的设备",
-    body: "参考图、RAW 与导出渲染全部在浏览器本地完成，不上传用户照片。",
-  },
-};
+const PAGE_ORDER = NAV_ITEMS.map((item) => item.action);
 
 function Field({
   autoComplete,
+  autoFocus,
   error,
   icon: Icon,
   id,
@@ -62,6 +64,7 @@ function Field({
         <input
           id={id}
           autoComplete={autoComplete}
+          autoFocus={autoFocus}
           placeholder={placeholder}
           type={visible ? "text" : type}
           value={value}
@@ -122,13 +125,15 @@ function AuthPanel({ mode, onAuthenticated, onModeChange }) {
     setSubmitting(true);
     try {
       const session = mode === "register"
-        ? await registerLocalAccount({ username, password, remember })
-        : await loginLocalAccount({ username, password, remember });
+        ? await registerCloudAccount({ username, password, remember })
+        : await loginCloudAccount({ username, password, remember });
       onAuthenticated(session);
     } catch (error) {
       setMessage(error?.message || "暂时无法完成登录，请稍后重试");
-      if (error?.code === "wrong-password") setErrors({ password: error.message });
-      if (error?.code === "account-not-found" || error?.code === "username-exists") {
+      if (["wrong-password", "invalid-credentials"].includes(error?.code)) {
+        setErrors({ password: error.message });
+      }
+      if (["account-not-found", "username-exists", "invalid-username"].includes(error?.code)) {
         setErrors({ username: error.message });
       }
     } finally {
@@ -142,8 +147,8 @@ function AuthPanel({ mode, onAuthenticated, onModeChange }) {
       <div className="auth-heading">
         <span className="auth-mark"><Sparkles size={18} /></span>
         <div>
-          <p>Color Lab Account</p>
-          <h2>{mode === "login" ? "继续你的创作" : "创建本机账户"}</h2>
+          <p>COLOR LAB CLOUD</p>
+          <h2>{mode === "login" ? "继续你的创作" : "创建云端账户"}</h2>
         </div>
       </div>
 
@@ -178,6 +183,7 @@ function AuthPanel({ mode, onAuthenticated, onModeChange }) {
           value={username}
           error={errors.username}
           autoComplete="username"
+          autoFocus
           placeholder="3–24 个字符"
           onChange={(event) => {
             setUsername(event.target.value);
@@ -228,7 +234,7 @@ function AuthPanel({ mode, onAuthenticated, onModeChange }) {
           <span className="remember-check"><CheckCircle2 size={13} /></span>
           <span>
             记住我
-            <small>下次在这台设备自动登录</small>
+            <small>在这台设备保持 30 天登录状态</small>
           </span>
         </label>
 
@@ -250,17 +256,161 @@ function AuthPanel({ mode, onAuthenticated, onModeChange }) {
 
       <div className="local-security-note">
         <ShieldCheck size={15} />
-        <span>密码经加盐派生后保存在本机，不保存明文；照片不会上传。</span>
+        <span>账户、云端照片与历史记录仅对当前账号可见，可在不同设备同步。</span>
       </div>
     </section>
   );
 }
 
+function HomeView({ onNavigate }) {
+  return (
+    <div className="page-layout home-view">
+      <section className="page-lead">
+        <p className="hero-badge">Reference-driven color intelligence</p>
+        <h1 className="hero-title">
+          让影像的光<br />
+          照进你的照片。
+        </h1>
+      </section>
+      <section className="landing-bottom">
+        <p className="hero-description">
+          从样片读取影调、色彩、光线与质感，让 Color Engine 4 建立属于你的可编辑风格。
+        </p>
+        <button className="hero-explore" type="button" onClick={() => onNavigate("capability")}>
+          探索色彩引擎 <ArrowRight size={16} />
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function CapabilityView({ onNavigate }) {
+  const features = [
+    { icon: Aperture, label: "语义仿色", body: "区分肤色、天空、植物与中性色，避免全局匹配造成串色。" },
+    { icon: Palette, label: "七色色彩", body: "独立分析红、橙、黄、绿、青、蓝、紫的色相、明度与纯度。" },
+    { icon: SlidersHorizontal, label: "实时控制", body: "基本参数、RGB 曲线、颗粒与质感在画面上即时反馈。" },
+    { icon: Layers3, label: "RAW 与批量", body: "支持主流 RAW、多个目标照片以及原尺寸导出。" },
+  ];
+  return (
+    <div className="page-layout detail-view">
+      <section className="detail-copy">
+        <p className="page-kicker">COLOR ENGINE 4</p>
+        <h1>读取的不只是颜色，<br />还有照片的光。</h1>
+        <p>风格被拆成影调、光源、语义区域、三维色彩关系与多尺度质感，再以可编辑参数重新组合。</p>
+        <button className="page-inline-action" type="button" onClick={() => onNavigate("privacy")}>
+          了解数据边界 <ArrowRight size={16} />
+        </button>
+      </section>
+      <div className="capability-list" aria-label="色彩引擎能力">
+        {features.map(({ icon: Icon, label, body }, index) => (
+          <article key={label}>
+            <span><Icon size={18} /></span>
+            <small>0{index + 1}</small>
+            <h2>{label}</h2>
+            <p>{body}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PrivacyView({ onNavigate }) {
+  const protections = [
+    { icon: LockKeyhole, title: "私有访问", body: "云端对象不提供公开地址，读取、下载与删除均校验当前账号。" },
+    { icon: Database, title: "跨设备同步", body: "账户、照片索引、历史记录与风格档案跟随同一账号。" },
+    { icon: ImageIcon, title: "原图控制", body: "本地分析仍在浏览器完成；只有用户选择上传的照片进入云端。" },
+  ];
+  return (
+    <div className="page-layout detail-view privacy-view">
+      <section className="detail-copy">
+        <p className="page-kicker">PRIVATE BY ACCOUNT</p>
+        <h1>可以同步，<br />不等于公开。</h1>
+        <p>登录后可把照片和创作历史保存到云端。每个文件都归属账号，不进入公共图库，也不会被其他用户检索。</p>
+        <button className="page-inline-action" type="button" onClick={() => onNavigate("contact")}>
+          联系与反馈 <ArrowRight size={16} />
+        </button>
+      </section>
+      <div className="privacy-stack">
+        <div className="privacy-orbit" aria-hidden="true">
+          <span><Cloud size={28} /></span>
+          <i />
+          <b />
+        </div>
+        {protections.map(({ icon: Icon, title, body }) => (
+          <article key={title}>
+            <Icon size={18} />
+            <div>
+              <h2>{title}</h2>
+              <p>{body}</p>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ContactView({ onNavigate }) {
+  return (
+    <div className="page-layout contact-view">
+      <section className="contact-copy">
+        <p className="page-kicker">REACH COLOR LAB</p>
+        <h1>让下一次更新，<br />回应真实的创作。</h1>
+        <p>功能建议、错误样片和相机色彩反馈都可以通过公开项目提交。请勿在公开 Issue 中上传含隐私的原始照片。</p>
+      </section>
+      <section className="contact-actions" aria-label="联系方式">
+        <a href="https://github.com/LeoMa0916/color-lab" target="_blank" rel="noreferrer">
+          <span><Github size={21} /></span>
+          <div>
+            <small>PROJECT</small>
+            <strong>GitHub 项目主页</strong>
+          </div>
+          <ArrowRight size={17} />
+        </a>
+        <a href="https://github.com/LeoMa0916/color-lab/issues" target="_blank" rel="noreferrer">
+          <span><Mail size={21} /></span>
+          <div>
+            <small>FEEDBACK</small>
+            <strong>提交功能建议或问题</strong>
+          </div>
+          <ArrowRight size={17} />
+        </a>
+        <button type="button" onClick={() => onNavigate("home")}>
+          <ArrowLeft size={16} /> 返回首页
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function PageContent({ page, onNavigate }) {
+  if (page === "capability") return <CapabilityView onNavigate={onNavigate} />;
+  if (page === "privacy") return <PrivacyView onNavigate={onNavigate} />;
+  if (page === "contact") return <ContactView onNavigate={onNavigate} />;
+  return <HomeView onNavigate={onNavigate} />;
+}
+
 export function LandingPage({ onAuthenticated }) {
+  const transitionTimer = useRef(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState("login");
-  const [feature, setFeature] = useState("capability");
+  const [activePage, setActivePage] = useState("home");
+  const [transition, setTransition] = useState(null);
+
+  useEffect(() => () => clearTimeout(transitionTimer.current), []);
+
+  useEffect(() => {
+    function closeOnEscape(event) {
+      if (event.key === "Escape") {
+        setAuthOpen(false);
+        setMobileMenuOpen(false);
+      }
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, []);
 
   function openAuth(mode = "login") {
     setAuthMode(mode);
@@ -268,15 +418,28 @@ export function LandingPage({ onAuthenticated }) {
     setMobileMenuOpen(false);
   }
 
-  function handleNavigation(action) {
-    if (action === "workspace") openAuth("login");
-    else if (action === "home") setFeature("capability");
-    else setFeature(action);
+  function navigate(nextPage) {
+    if (nextPage === activePage) {
+      setMobileMenuOpen(false);
+      return;
+    }
+    const fromIndex = PAGE_ORDER.indexOf(activePage);
+    const toIndex = PAGE_ORDER.indexOf(nextPage);
+    const direction = toIndex > fromIndex ? "forward" : "backward";
+    clearTimeout(transitionTimer.current);
+    setTransition({
+      from: activePage,
+      to: nextPage,
+      direction,
+      id: `${activePage}-${nextPage}-${Date.now()}`,
+    });
+    setActivePage(nextPage);
     setMobileMenuOpen(false);
+    transitionTimer.current = setTimeout(() => setTransition(null), 620);
   }
 
   return (
-    <main id="home" className="landing-root relative h-screen w-full overflow-hidden bg-black font-geist">
+    <main id="home" className={`landing-root page-${activePage} relative h-screen w-full overflow-hidden bg-black font-geist`}>
       <video
         className="landing-video absolute h-full w-full object-cover"
         autoPlay
@@ -294,18 +457,19 @@ export function LandingPage({ onAuthenticated }) {
 
       <nav className="landing-nav relative z-30 flex items-center justify-between px-6 py-5 md:px-12 lg:px-16" aria-label="主导航">
         <div className="flex items-center gap-10">
-          <button className="landing-brand text-lg font-semibold tracking-tight text-white sm:text-xl" type="button" onClick={() => handleNavigation("home")}>
+          <button className="landing-brand text-lg font-semibold tracking-tight text-white sm:text-xl" type="button" onClick={() => navigate("home")}>
             <span className="brand-lens" aria-hidden="true" />
             <span>调色室</span>
             <small>Color Lab</small>
           </button>
-          <div className="hidden items-center gap-7 md:flex">
+          <div className="landing-desktop-nav hidden items-center gap-7 md:flex">
             {NAV_ITEMS.map((item) => (
               <button
                 key={item.action}
                 type="button"
+                aria-current={activePage === item.action ? "page" : undefined}
                 className="text-sm text-white/80 transition-colors hover:text-white"
-                onClick={() => handleNavigation(item.action)}
+                onClick={() => navigate(item.action)}
               >
                 {item.label}
               </button>
@@ -336,7 +500,12 @@ export function LandingPage({ onAuthenticated }) {
       <div className={mobileMenuOpen ? "mobile-menu open" : "mobile-menu"} aria-hidden={!mobileMenuOpen}>
         <div className="mobile-menu-inner">
           {NAV_ITEMS.map((item) => (
-            <button key={item.action} type="button" onClick={() => handleNavigation(item.action)}>
+            <button
+              key={item.action}
+              type="button"
+              aria-current={activePage === item.action ? "page" : undefined}
+              onClick={() => navigate(item.action)}
+            >
               {item.label}
             </button>
           ))}
@@ -346,52 +515,43 @@ export function LandingPage({ onAuthenticated }) {
         </div>
       </div>
 
-      <div className="landing-content relative z-10 flex h-[calc(100vh-80px)] flex-col justify-between px-6 pb-10 pt-12 sm:pb-12 sm:pt-16 md:px-12 md:pb-16 md:pt-20 lg:px-16">
-        <section className="max-w-3xl">
-          <p className="hero-badge mb-4 text-xs text-white/90 sm:mb-6 sm:text-sm">
-            Reference-driven color intelligence
-          </p>
-          <h1 className="hero-title text-3xl font-medium leading-[1.1] tracking-tight text-white sm:text-5xl md:text-6xl lg:text-7xl">
-            把参考影像的光，<br />
-            折叠进你的<br />
-            下一张照片。
-          </h1>
-        </section>
-
-        <section className="landing-bottom">
-          <div className="feature-reveal" key={feature}>
-            <strong>{FEATURE_COPY[feature].title}</strong>
-            <span>{FEATURE_COPY[feature].body}</span>
+      <div className="landing-scenes">
+        {transition ? (
+          <div className={`scene-transition ${transition.direction}`} key={transition.id}>
+            <div className="landing-scene scene-from" aria-hidden="true">
+              <PageContent page={transition.from} onNavigate={navigate} />
+            </div>
+            <div className="landing-scene scene-to">
+              <PageContent page={transition.to} onNavigate={navigate} />
+            </div>
           </div>
-          <p className="hero-description mb-5 max-w-sm text-sm leading-relaxed text-white/60 sm:mb-6 sm:max-w-lg sm:text-base md:text-lg">
-            从样片读取影调、色彩、光线与质感，让 Color Engine 4 建立属于你的可编辑风格。
-          </p>
-          <div className="hero-actions">
-            <button
-              className="hero-cta inline-flex items-center gap-2 rounded-lg bg-white px-5 py-2.5 text-sm font-medium text-black transition-transform hover:scale-105 sm:px-6 sm:py-3"
-              type="button"
-              onClick={() => openAuth("register")}
-            >
-              开始创作 <ArrowRight size={16} />
-            </button>
-            <button className="hero-login-link" type="button" onClick={() => openAuth("login")}>
-              已有账户，直接登录
-            </button>
+        ) : (
+          <div className="landing-scene scene-current">
+            <PageContent page={activePage} onNavigate={navigate} />
           </div>
-        </section>
+        )}
       </div>
 
-      <aside className={authOpen ? "auth-shell open" : "auth-shell"}>
-        <button className="auth-mobile-close" type="button" aria-label="关闭账户面板" onClick={() => setAuthOpen(false)}>
-          <X size={18} />
-        </button>
-        <AuthPanel
-          mode={authMode}
-          onModeChange={setAuthMode}
-          onAuthenticated={onAuthenticated}
-        />
-      </aside>
-      {authOpen && <button className="auth-mobile-backdrop" aria-label="关闭账户面板" type="button" onClick={() => setAuthOpen(false)} />}
+      {authOpen && (
+        <div className="auth-modal-layer">
+          <button
+            className="auth-modal-backdrop"
+            aria-label="关闭账户窗口"
+            type="button"
+            onClick={() => setAuthOpen(false)}
+          />
+          <aside className="auth-shell open" role="dialog" aria-modal="true" aria-label="Color Lab 账户">
+            <button className="auth-modal-close" type="button" aria-label="关闭账户窗口" onClick={() => setAuthOpen(false)}>
+              <X size={18} />
+            </button>
+            <AuthPanel
+              mode={authMode}
+              onModeChange={setAuthMode}
+              onAuthenticated={onAuthenticated}
+            />
+          </aside>
+        </div>
+      )}
     </main>
   );
 }

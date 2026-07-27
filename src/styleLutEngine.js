@@ -46,6 +46,7 @@ function renderLut(source, reference, settings, size, region, includeAdjustments
       height: 1,
       semanticMasks,
       samplePosition: [0.5, 0.5],
+      skipTexture: true,
     },
   );
   if (includeAdjustments) {
@@ -57,7 +58,7 @@ function renderLut(source, reference, settings, size, region, includeAdjustments
     });
     applyCurveLuts(data, settings.curves || IDENTITY_CURVES);
   }
-  return smoothLut(createLutFromRgba(data, size), region ? 0.08 : 0.11, 1);
+  return smoothLut(createLutFromRgba(data, size), region ? 0.05 : 0.04, 1);
 }
 
 export function buildStyleLuts(

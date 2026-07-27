@@ -33,6 +33,17 @@ function encodedExposure(exposureEV) {
   return 2 ** (clamp(exposureEV || 0, -2.5, 2.5) / SRGB_EXPOSURE_GAMMA);
 }
 
+function applyReversibleGain(value, gain) {
+  const normalized = clamp(value / 255, 0, 1);
+  const safeGain = clamp(gain, 0.2, 5);
+  const denominator = 1 + (safeGain - 1) * normalized;
+  return clamp(
+    denominator > 0 ? normalized * safeGain / denominator * 255 : 0,
+    0,
+    255,
+  );
+}
+
 function makeCell() {
   return { red: 0, green: 0, blue: 0, luminance: 0, weight: 0 };
 }
@@ -172,7 +183,10 @@ export function normalizeRgbForLighting(rgb, lighting, x, y) {
   const exposure = encodedExposure(local.exposureEV);
   const whitePoint = local.whitePoint || [1, 1, 1];
   return rgb.map((value, channel) =>
-    clamp(value / Math.max(0.55, whitePoint[channel]) / exposure, 0, 255));
+    applyReversibleGain(
+      value,
+      1 / Math.max(0.2, whitePoint[channel] * exposure),
+    ));
 }
 
 export function blendSceneLighting(source, reference, amount = 0.35) {
@@ -207,7 +221,7 @@ export function applySceneLighting(rgb, lighting, x, y) {
   const exposure = encodedExposure(local.exposureEV);
   const whitePoint = local.whitePoint || [1, 1, 1];
   return rgb.map((value, channel) =>
-    clamp(value * whitePoint[channel] * exposure, 0, 255));
+    applyReversibleGain(value, whitePoint[channel] * exposure));
 }
 
 export function normalizeFrameLighting(data, width, height, lighting) {
