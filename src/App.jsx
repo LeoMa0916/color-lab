@@ -12,6 +12,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import LibRaw from "libraw-wasm";
+import { LogOut, UserRound } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   HUE_BANDS,
@@ -1069,7 +1070,7 @@ function StyleAnalysis({ profile }) {
   );
 }
 
-export function App() {
+export function App({ onLogout, username = "本机用户" }) {
   const [references, setReferences] = useState([]);
   const [referenceStats, setReferenceStats] = useState(null);
   const [targets, setTargets] = useState([]);
@@ -1800,11 +1801,18 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell editor-shell">
       <header className="topbar">
         <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 4</small></div>
         <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
         <div className="header-actions">
+          <div className="editor-account glass-surface" title={`当前账户：${username}`}>
+            <UserRound size={14} />
+            <span>{username}</span>
+            <button type="button" onClick={onLogout} aria-label="退出登录" title="退出登录">
+              <LogOut size={14} />
+            </button>
+          </div>
           <GlassButton className="demo-button" onClick={loadDemo}><Sparkle size={15} />加载示例</GlassButton>
           <GlassButton className="icon-button" onClick={resetActive} title="重置当前照片"><ArrowCounterClockwise size={18} /></GlassButton>
           <button
@@ -1839,7 +1847,7 @@ export function App() {
                   : "照片仅在浏览器本地分析，不会上传服务器"}
               </span>
               <div className="global-progress-track">
-                <i style={{ width: `${Math.max(2, busyTask.progress || 0)}%` }} />
+                <i style={{ transform: `scaleX(${Math.max(2, busyTask.progress || 0) / 100})` }} />
               </div>
             </div>
             <b>{Math.round(busyTask.progress || 0)}%</b>

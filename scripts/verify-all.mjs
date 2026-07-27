@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 
 const scripts = [
+  "verify:auth",
   "verify:semantic",
   "verify:lighting",
   "verify:color-management",

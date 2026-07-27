@@ -192,6 +192,22 @@ try {
     mobile: false,
   });
   await cdp.send("Page.navigate", { url: `http://127.0.0.1:${previewPort}/` });
+  await waitFor(
+    cdp,
+    "document.readyState === 'complete' && document.querySelector('[data-testid=\"auth-register-tab\"]')",
+  );
+  await evaluate(cdp, `(() => {
+    const setValue = (input, value) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    document.querySelector('[data-testid="auth-register-tab"]').click();
+    setValue(document.querySelector('input[autocomplete="username"]'), 'engine_qa');
+    const passwords = document.querySelectorAll('input[autocomplete="new-password"]');
+    setValue(passwords[0], 'EngineQA2026');
+    setValue(passwords[1], 'EngineQA2026');
+    document.querySelector('[data-testid="auth-submit"]').click();
+  })()`);
   await waitFor(cdp, "document.readyState === 'complete' && document.querySelector('.demo-button')");
   await evaluate(cdp, "document.querySelector('.demo-button').click()");
   await waitFor(
@@ -278,11 +294,45 @@ try {
   })`);
   assert(mobile.width === 390, `Unexpected mobile viewport width: ${mobile.width}`);
   assert(mobile.scrollWidth === mobile.width, "Mobile layout overflows horizontally");
+
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 844,
+    height: 390,
+    deviceScaleFactor: 1,
+    mobile: true,
+  });
+  await cdp.send("Page.reload", { ignoreCache: true });
+  await waitFor(cdp, "document.readyState === 'complete' && document.querySelector('.workspace')");
+  const landscape = await evaluate(cdp, `({
+    width: window.innerWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+    workspaceHeight: document.querySelector('.workspace').getBoundingClientRect().height
+  })`);
+  assert(landscape.scrollWidth === landscape.width, "Landscape layout overflows horizontally");
+  assert(landscape.workspaceHeight > 0, "Landscape workspace is not visible");
+
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  const reducedMotion = await evaluate(cdp, `(() => {
+    const styles = getComputedStyle(document.querySelector('.editor-account'));
+    return {
+      animationDuration: styles.animationDuration,
+      transitionDuration: styles.transitionDuration
+    };
+  })()`);
+  assert(
+    reducedMotion.animationDuration === "1e-05s"
+      || reducedMotion.animationDuration === "0.00001s",
+    `Reduced motion animation is still active: ${reducedMotion.animationDuration}`,
+  );
   assert(!consoleErrors.length, `Browser console errors: ${consoleErrors.join(" | ")}`);
 
   console.log("Browser end-to-end verification passed", {
     checksums: [initialChecksum, basicChecksum, curveChecksum],
     mobile,
+    landscape,
+    reducedMotion,
     consoleErrors: consoleErrors.length,
   });
 } finally {

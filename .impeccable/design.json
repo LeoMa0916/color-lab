@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-27T12:33:06.4654453+08:00",
+  "title": "Design System: 调色室 / Color Lab",
+  "extensions": {
+    "colorMeta": {
+      "obsidian-background": {
+        "role": "neutral",
+        "displayName": "黑曜石背景",
+        "canonical": "#06080a",
+        "tonalRamp": ["#050607", "#0b0e11", "#171b20", "#2b3138", "#4a525d", "#747e8b", "#a9b1ba", "#e9ecef"]
+      },
+      "porcelain-text": {
+        "role": "primary",
+        "displayName": "瓷白",
+        "canonical": "#f5f5f7",
+        "tonalRamp": ["#202125", "#393b40", "#565960", "#767a82", "#9a9ea6", "#bdc0c6", "#dcdee2", "#f5f5f7"]
+      },
+      "optical-blue": {
+        "role": "primary",
+        "displayName": "光学蓝",
+        "canonical": "#3f74ff",
+        "tonalRamp": ["#07163e", "#0e2a72", "#1742a8", "#275bdd", "#3f74ff", "#7198ff", "#a4baff", "#edf2ff"]
+      },
+      "signal-green": {
+        "role": "secondary",
+        "displayName": "信号绿",
+        "canonical": "#62dca1",
+        "tonalRamp": ["#08281c", "#104b35", "#1d714f", "#31976c", "#4bbc88", "#70dba7", "#a4ebc7", "#ecfbf4"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "影像展示标题",
+        "purpose": "一级页面唯一的品牌主标题。"
+      },
+      "body": {
+        "displayName": "专业界面正文",
+        "purpose": "解释工作流、隐私与操作状态。"
+      },
+      "label": {
+        "displayName": "参数标签",
+        "purpose": "字段、调色参数、元数据和状态。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "optical-edge",
+        "value": "inset 0 1px 0 rgba(255,255,255,.24)",
+        "purpose": "描述玻璃上缘厚度。"
+      },
+      {
+        "name": "ambient-float",
+        "value": "0 28px 70px rgba(0,0,0,.38)",
+        "purpose": "让一级账户面板从视频背景中悬浮。"
+      },
+      {
+        "name": "tool-depth",
+        "value": "0 8px 22px rgba(0,0,0,.24)",
+        "purpose": "区分编辑器工具层级。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "liquid-enter",
+        "value": "cubic-bezier(.16, 1, .3, 1)",
+        "purpose": "面板和主内容进入。"
+      },
+      {
+        "name": "state-change",
+        "value": "200ms ease",
+        "purpose": "按钮、焦点和选中状态。"
+      }
+    ],
+    "breakpoints": [
+      { "name": "phone", "value": "640px" },
+      { "name": "account-sheet", "value": "900px" },
+      { "name": "compact-editor", "value": "1180px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Glass Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "瓷白高透主操作，用于登录、注册与当前视图唯一主行动。",
+      "html": "<button class=\"ds-btn-primary\">登录并进入工作台</button>",
+      "css": ".ds-btn-primary{min-height:48px;padding:12px 20px;border:1px solid rgba(255,255,255,.62);border-radius:15px;background:linear-gradient(180deg,#fff,#e7ecf5);color:#06080a;font:600 14px Geist,sans-serif;box-shadow:inset 0 1px #fff,0 14px 30px rgba(0,0,0,.24);transition:transform .2s ease,box-shadow .2s ease}.ds-btn-primary:hover{transform:translateY(-1px);box-shadow:inset 0 1px #fff,0 17px 36px rgba(0,0,0,.28)}.ds-btn-primary:focus-visible{outline:2px solid #79a2ff;outline-offset:2px}.ds-btn-primary:active{transform:scale(.98)}"
+    },
+    {
+      "name": "Secondary Glass Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "低透明玻璃次操作，保持主行动层级清晰。",
+      "html": "<button class=\"ds-btn-secondary\">加载示例</button>",
+      "css": ".ds-btn-secondary{min-height:44px;padding:10px 16px;border:1px solid rgba(255,255,255,.16);border-radius:15px;background:rgba(38,42,47,.58);color:#f5f5f7;font:550 13px Geist,sans-serif;backdrop-filter:blur(20px) saturate(145%);box-shadow:inset 0 1px rgba(255,255,255,.18),0 8px 22px rgba(0,0,0,.24);transition:background .2s ease,transform .2s ease}.ds-btn-secondary:hover{background:rgba(52,56,62,.7);transform:translateY(-1px)}.ds-btn-secondary:focus-visible{outline:2px solid #79a2ff;outline-offset:2px}.ds-btn-secondary:active{transform:scale(.98)}"
+    },
+    {
+      "name": "Optical Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "显式标签下的深色光学输入框。",
+      "html": "<label class=\"ds-field\"><span>用户名</span><input class=\"ds-input\" placeholder=\"3–24 个字符\"></label>",
+      "css": ".ds-field{display:grid;gap:7px;color:#c5c9d2;font:550 12px Geist,sans-serif}.ds-input{height:46px;padding:0 14px;border:1px solid rgba(255,255,255,.14);border-radius:15px;background:rgba(7,11,16,.58);color:#f5f5f7;font:400 16px Geist,sans-serif;transition:border-color .2s ease,box-shadow .2s ease}.ds-input::placeholder{color:#777d88}.ds-input:hover{border-color:rgba(255,255,255,.24)}.ds-input:focus-visible{outline:2px solid #79a2ff;outline-offset:2px}"
+    },
+    {
+      "name": "Account Glass Chamber",
+      "kind": "card",
+      "refersTo": "glass-panel",
+      "description": "一级页面的高层级账户与隐私入口。",
+      "html": "<section class=\"ds-glass\"><small>COLOR LAB ACCOUNT</small><h2>继续你的创作</h2><p>账户和照片留在本机。</p></section>",
+      "css": ".ds-glass{width:320px;padding:26px;border:1px solid rgba(255,255,255,.22);border-radius:32px;background:linear-gradient(145deg,rgba(80,94,122,.5),rgba(15,20,28,.72) 54%),rgba(19,24,32,.44);color:#f5f5f7;font-family:Geist,sans-serif;backdrop-filter:blur(38px) saturate(160%);box-shadow:inset 0 1px rgba(255,255,255,.3),0 28px 70px rgba(0,0,0,.38)}.ds-glass small{color:rgba(246,248,255,.68);font-size:10px}.ds-glass h2{margin:6px 0 12px;font-size:21px}.ds-glass p{margin:0;color:#9a9da3;font-size:13px;line-height:1.6}"
+    },
+    {
+      "name": "Engine Version Chip",
+      "kind": "chip",
+      "description": "标识当前色彩引擎版本或模式。",
+      "html": "<span class=\"ds-chip\">Color Engine 4</span>",
+      "css": ".ds-chip{display:inline-flex;align-items:center;min-height:24px;padding:4px 8px;border:1px solid rgba(141,174,255,.22);border-radius:999px;background:rgba(80,113,208,.12);color:#9eb9ff;font:650 10px Geist,sans-serif;letter-spacing:.04em}"
+    }
+  ],
+  "narrative": {
+    "northStar": "暗房里的液态镜片",
+    "overview": "界面像一枚悬浮在暗房中的光学镜片：冷静、克制、透光，但不会牺牲专业工具所需的清晰度和密度。液态玻璃是信息层级和交互状态，不是覆盖所有内容的装饰。",
+    "keyCharacteristics": [
+      "深色暗房底色与冷蓝光学强调色。",
+      "不对称高光、柔和折射和清晰边缘共同定义玻璃。",
+      "品牌首屏宽松，专业工作台紧凑。",
+      "动效用于解释进入、展开和处理中状态，并尊重减少动态效果设置。"
+    ],
+    "rules": [
+      {
+        "name": "The Rare Blue Rule",
+        "body": "光学蓝只标记当前主操作、活动状态或关键数据，不把整个界面染蓝。",
+        "section": "colors"
+      },
+      {
+        "name": "The Optical Evidence Rule",
+        "body": "玻璃必须同时具备边缘、透射和阴影证据；只有模糊或只有透明度都不算完成的玻璃。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do 用真实内容、视频和照片为玻璃提供折射背景。",
+      "Do 保持表单显式标签、可见焦点、就近错误和提交状态。",
+      "Do 在视频或网络资源不可用时保留完整的静态暗房背景。",
+      "Do 在工作台优先保证直方图、曲线、图片与参数的可读性。"
+    ],
+    "donts": [
+      "Don't 把每一段文字都放进独立玻璃卡片。",
+      "Don't 使用无边界的低透明表面，让文字与背景互相干扰。",
+      "Don't 用装饰动画掩盖分析、导出或登录的真实进度。",
+      "Don't 使用 Emoji 充当结构图标，或混用不同描边语言。"
+    ]
+  }
+}
