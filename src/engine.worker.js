@@ -8,6 +8,32 @@ import { applyTextureMatchTiled } from "./textureEngine.js";
 
 const latestRevisions = new Map();
 
+function profileDistance(source, reference) {
+  const tone = source?.tone?.quantiles || [];
+  const targetTone = reference?.tone?.quantiles || [];
+  const toneDistance = tone.reduce(
+    (sum, value, index) => sum + Math.abs(value - (targetTone[index] ?? value)),
+    0,
+  ) / Math.max(1, tone.length);
+  const saturationDistance = Math.abs(
+    (source?.saturation || 0) - (reference?.saturation || 0),
+  ) * 255;
+  return toneDistance + saturationDistance;
+}
+
+function sampledDifference(before, after) {
+  const stride = Math.max(4, Math.floor(before.length / 24000 / 4) * 4);
+  let difference = 0;
+  let samples = 0;
+  for (let index = 0; index < before.length; index += stride) {
+    difference += Math.abs(before[index] - after[index]);
+    difference += Math.abs(before[index + 1] - after[index + 1]);
+    difference += Math.abs(before[index + 2] - after[index + 2]);
+    samples += 3;
+  }
+  return difference / Math.max(1, samples);
+}
+
 function isCurrent(photoId, revision) {
   return (latestRevisions.get(photoId) || revision) <= revision;
 }
@@ -58,6 +84,7 @@ self.onmessage = async (event) => {
       const output = payload.data instanceof Uint8ClampedArray
         ? payload.data
         : new Uint8ClampedArray(payload.data);
+      const sourceSample = new Uint8ClampedArray(output);
       report(12, "正在应用 V4 色彩映射");
       applyStyleLuts(
         output,
@@ -83,6 +110,13 @@ self.onmessage = async (event) => {
       applyBasicAdjustments(output, payload.width, payload.height, payload.settings);
       report(82, "正在应用曲线");
       applyCurveLuts(output, payload.settings.curves);
+      if (
+        payload.settings.strength > 5
+        && profileDistance(payload.source, payload.reference) > 3
+        && sampledDifference(sourceSample, output) < 0.12
+      ) {
+        throw new Error("仿色结果意外等于原图，请重新分析参考图后再导出");
+      }
       report(88, "正在编码图片");
 
       if (payload.output.format === "bmp") {

@@ -17,6 +17,62 @@ const IDENTITY_CURVES = {
   blue: [{ x: 0, y: 0 }, { x: 255, y: 255 }],
 };
 
+function rounded(values, digits = 5) {
+  const scale = 10 ** digits;
+  return Array.from(values || [], (value) =>
+    Math.round((Number(value) || 0) * scale) / scale);
+}
+
+function compactProfile(profile) {
+  if (!profile) return null;
+  return {
+    version: profile.version,
+    mean: rounded(profile.mean, 3),
+    std: rounded(profile.std, 3),
+    saturation: rounded([profile.saturation], 5)[0],
+    tone: rounded(profile.tone?.quantiles, 3),
+    zones: (profile.zones || []).map((zone) =>
+      rounded([zone.lightness, zone.a, zone.b, zone.chroma, zone.weight], 5)),
+    neutral: (profile.neutralZones || []).map((zone) =>
+      rounded([zone.a, zone.b, zone.coverage], 5)),
+    grid: (profile.colorGrid || []).map((row) =>
+      row.map((cell) =>
+        rounded([cell.hue, cell.chroma, cell.lightness, cell.coverage], 5))),
+  };
+}
+
+export function profileFingerprint(profile) {
+  if (!profile) return "none";
+  const semantic = Object.fromEntries(
+    Object.entries(profile.semantic?.regions || {})
+      .filter(([, region]) => region?.profile)
+      .map(([id, region]) => [
+        id,
+        {
+          coverage: rounded([region.coverage], 5)[0],
+          confidence: rounded([region.confidence], 5)[0],
+          profile: compactProfile(region.profile),
+        },
+      ]),
+  );
+  return JSON.stringify({
+    profile: compactProfile(profile),
+    intrinsic: compactProfile(profile.lighting?.intrinsic),
+    lighting: profile.lighting
+      ? rounded([
+        profile.lighting.temperature,
+        profile.lighting.exposureEV,
+        profile.lighting.confidence,
+        ...(profile.lighting.grid || []).flatMap((cell) =>
+          [cell?.red, cell?.green, cell?.blue, cell?.exposure]),
+      ], 5)
+      : null,
+    semanticModel: profile.semantic?.model,
+    semanticConfidence: rounded([profile.semantic?.confidence], 5)[0],
+    semantic,
+  });
+}
+
 function renderLut(source, reference, settings, size, region, includeAdjustments) {
   const data = lutToRgbaInput(size);
   const pixelCount = size ** 3;

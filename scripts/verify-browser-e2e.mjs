@@ -198,6 +198,22 @@ try {
   );
   await evaluate(cdp, "document.querySelector('.landing-login-button').click()");
   await waitFor(cdp, "document.querySelector('[data-testid=\"auth-register-tab\"]')");
+  await evaluate(cdp, "document.querySelector('.legal-consent-row button').click()");
+  await waitFor(cdp, "document.querySelector('.legal-dialog .legal-document')");
+  const legalDialog = await evaluate(cdp, `(() => {
+    const dialog = document.querySelector('.legal-dialog');
+    return {
+      title: dialog.querySelector('h2')?.textContent,
+      sections: dialog.querySelectorAll('.legal-document > section').length,
+      withinViewport: dialog.getBoundingClientRect().bottom <= innerHeight
+        && dialog.getBoundingClientRect().top >= 0,
+    };
+  })()`);
+  assert(legalDialog.title === "用户协议", "User agreement did not open from auth");
+  assert(legalDialog.sections >= 7, "User agreement is incomplete");
+  assert(legalDialog.withinViewport, "Legal dialog exceeds the desktop viewport");
+  await evaluate(cdp, "document.querySelector('.legal-dialog > header > button').click()");
+  await waitFor(cdp, "!document.querySelector('.legal-dialog')");
   await evaluate(cdp, `(() => {
     const setValue = (input, value) => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
@@ -208,6 +224,7 @@ try {
     const passwords = document.querySelectorAll('input[autocomplete="new-password"]');
     setValue(passwords[0], 'EngineQA2026');
     setValue(passwords[1], 'EngineQA2026');
+    document.querySelector('[data-testid="legal-consent"]').click();
     document.querySelector('[data-testid="auth-submit"]').click();
   })()`);
   await waitFor(cdp, "document.readyState === 'complete' && document.querySelector('.demo-button')");
@@ -217,6 +234,11 @@ try {
     "document.querySelectorAll('.reference-thumb').length >= 2 && document.querySelectorAll('.target-thumb').length >= 5 && document.querySelector('canvas.styled')?.width > 0",
   );
   await delay(1500);
+  const disclosures = await evaluate(
+    cdp,
+    "document.querySelectorAll('.right-panel .inspector-disclosure-toggle').length",
+  );
+  assert(disclosures >= 6, "Every inspector module must be collapsible");
 
   const checksumExpression = `(() => {
     const canvas = document.querySelector('canvas.styled');
@@ -229,7 +251,6 @@ try {
     return sum;
   })()`;
   const initialChecksum = await evaluate(cdp, checksumExpression);
-  await evaluate(cdp, "document.querySelector('.basic-toggle').click()");
   await waitFor(cdp, "document.querySelector('input[aria-label=\"曝光度\"]')");
   await evaluate(cdp, `(() => {
     const input = document.querySelector('input[aria-label="曝光度"]');
@@ -247,6 +268,8 @@ try {
   const basicChecksum = await evaluate(cdp, checksumExpression);
   assert(initialChecksum !== basicChecksum, "Basic adjustment did not change the preview");
 
+  await evaluate(cdp, "document.querySelector('.curve-section .inspector-disclosure-toggle').click()");
+  await waitFor(cdp, "document.querySelector('.curve-canvas')");
   await evaluate(cdp, "document.querySelector('.curve-canvas').scrollIntoView({ block: 'center' })");
   await delay(300);
   const curveRect = await evaluate(cdp, `(() => {

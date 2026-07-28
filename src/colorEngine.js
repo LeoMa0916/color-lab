@@ -737,27 +737,35 @@ export function createToneLutV3(source, reference, strength) {
   for (let value = 0; value < 1024; value += 1) {
     const input = value / 1023;
     const mapped = map(input * 255) / 255;
-    const endpointProtection = 0.35 + 0.65
-      * smoothstep(0.012, 0.07, input)
-      * (1 - smoothstep(0.93, 0.995, input));
+    // V4.1 keeps the absolute endpoints stable while allowing the photographed
+    // toe, midtones and highlight shoulder to follow the reference much more
+    // closely. The former cap started suppressing highlight intent around 58%,
+    // which made soft film references look almost identical to the source.
+    const endpointProtection = smoothstep(0.002, 0.028, input)
+      * (1 - smoothstep(0.974, 0.999, input));
     const midtoneWeight = 1 - Math.min(1, Math.abs(input - 0.5) * 2);
-    const highlightWeight = smoothstep(0.58, 0.92, input);
-    const shadowWeight = 1 - smoothstep(0.035, 0.24, input);
-    const maximumLift = (0.027 + midtoneWeight * 0.056)
-      * (1 - highlightWeight * 0.58)
-      * (1 - shadowWeight * 0.28);
-    const maximumDrop = (0.033 + midtoneWeight * 0.062)
-      * (1 - highlightWeight * 0.62)
-      * (1 - shadowWeight * 0.18);
+    const highlightWeight = smoothstep(0.86, 0.985, input);
+    const shadowWeight = 1 - smoothstep(0.018, 0.16, input);
+    const maximumLift = (0.038 + midtoneWeight * 0.048)
+      * (1 - highlightWeight * 0.72)
+      * (1 - shadowWeight * 0.12);
+    const maximumDrop = (0.045 + midtoneWeight * 0.055)
+      * (1 - highlightWeight * 0.68)
+      * (1 - shadowWeight * 0.1);
     const shift = mapped - input;
     const guardedMapped = input + Math.max(
       -maximumDrop,
       Math.min(maximumLift, shift),
     );
-    const adjusted = input + (guardedMapped - input) * strength * endpointProtection;
+    const shoulderBlend = 1 - smoothstep(0.985, 1, input);
+    const adjusted = input + (guardedMapped - input)
+      * strength
+      * Math.max(endpointProtection, shoulderBlend * 0.16);
     previous = Math.max(previous, clampUnit(adjusted));
     lut[value] = previous;
   }
+  lut[0] = 0;
+  lut[lut.length - 1] = 1;
   return lut;
 }
 
@@ -785,13 +793,26 @@ function buildVersion3Lookups(source, reference) {
     a: Math.max(-0.055, Math.min(0.055, reference.zones[index].a - zone.a)),
     b: Math.max(-0.055, Math.min(0.055, reference.zones[index].b - zone.b)),
   }));
+  const globalChromaRatio = Math.max(
+    0.56,
+    Math.min(1.7, reference.saturation / Math.max(0.025, source.saturation)),
+  );
   const gridDeltas = source.colorGrid.map((row, zoneIndex) =>
     row.map((cell, colorIndex) => {
       const target = reference.colorGrid[zoneIndex][colorIndex];
       const evidence = Math.min(cell.coverage, target.coverage);
       return {
         hue: Math.max(-24, Math.min(24, circularDelta(target.hue, cell.hue))),
-        chroma: Math.max(0.65, Math.min(1.55, target.chroma / Math.max(0.014, cell.chroma))),
+        // Treat global colorfulness as a base layer and keep the 21-cell grid
+        // as a residual. This mirrors HSL/Point Color style workflows and
+        // avoids applying the same saturation change twice.
+        chroma: Math.max(
+          0.72,
+          Math.min(
+            1.42,
+            target.chroma / Math.max(0.014, cell.chroma) / globalChromaRatio,
+          ),
+        ),
         lightness: Math.max(-0.06, Math.min(0.06, target.lightness - cell.lightness)),
         confidence: smoothstep(0.0002, 0.012, evidence),
       };
@@ -842,6 +863,7 @@ function buildVersion3Lookups(source, reference) {
     hueShift,
     logChroma,
     lightnessShift,
+    globalChromaRatio,
   };
 }
 
@@ -1123,6 +1145,14 @@ export function applyStyleProfile(
       chroma = Math.hypot(a, b);
       hue = (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
       if (chroma > 0.007) {
+        const colorfulnessWeight = smoothstep(0.006, 0.095, chroma);
+        const globalRatio = version3Lookups.globalChromaRatio || 1;
+        chroma *= Math.exp(
+          Math.log(globalRatio)
+          * strength
+          * colorfulnessWeight
+          * 0.94,
+        );
         const hueIndex = Math.min(
           version3Lookups.hueBins - 1,
           Math.round(hue / 360 * version3Lookups.hueBins)
@@ -1141,9 +1171,9 @@ export function applyStyleProfile(
           hueShift = Math.max(-12, Math.min(12, hueShift));
           logChroma = Math.max(Math.log(0.75), Math.min(Math.log(1.3), logChroma));
         }
-        hue += hueShift * strength * 0.82;
-        chroma *= Math.exp(logChroma * strength * 0.86);
-        lightness += version3Lookups.lightnessShift[lookupIndex] * strength * 0.18;
+        hue += hueShift * strength * 0.88;
+        chroma *= Math.exp(logChroma * strength * 0.76);
+        lightness += version3Lookups.lightnessShift[lookupIndex] * strength * 0.34;
         chroma = Math.min(0.36, chroma);
         a = Math.cos(hue * Math.PI / 180) * chroma;
         b = Math.sin(hue * Math.PI / 180) * chroma;

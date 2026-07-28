@@ -29,14 +29,17 @@ function protectToneRange(red, green, blue, mapped) {
   const inputLight = luminance(red, green, blue);
   const mappedLight = luminance(mapped[0], mapped[1], mapped[2]);
   const midtoneWeight = Math.max(0, 1 - Math.abs(inputLight - 0.5) * 2);
-  const highlightWeight = smoothstep(0.52, 0.9, inputLight);
-  const shadowWeight = 1 - smoothstep(0.03, 0.24, inputLight);
-  const maximumLift = (0.05 + midtoneWeight * 0.075)
-    * (1 - highlightWeight * 0.65)
+  const highlightWeight = smoothstep(0.88, 0.99, inputLight);
+  const shadowWeight = 1 - smoothstep(0.018, 0.15, inputLight);
+  let maximumLift = (0.065 + midtoneWeight * 0.095)
+    * (1 - highlightWeight * 0.72)
     * (1 - shadowWeight * 0.08);
-  const maximumDrop = (0.038 + midtoneWeight * 0.068)
-    * (1 - highlightWeight * 0.62)
-    * (1 - shadowWeight * 0.16);
+  let maximumDrop = (0.058 + midtoneWeight * 0.09)
+    * (1 - highlightWeight * 0.68)
+    * (1 - shadowWeight * 0.1);
+  const collapseRisk = smoothstep(0.075, 0.19, Math.abs(mappedLight - inputLight));
+  maximumLift = maximumLift * (1 - collapseRisk * 0.58);
+  maximumDrop = maximumDrop * (1 - collapseRisk * 0.7);
   const limitedShift = Math.max(
     -maximumDrop,
     Math.min(maximumLift, mappedLight - inputLight),
@@ -50,9 +53,10 @@ function protectToneRange(red, green, blue, mapped) {
   const inputChroma = Math.max(red, green, blue) - Math.min(red, green, blue);
   const protectedLight = luminance(...protectedColor);
   const protectedChroma = Math.max(...protectedColor) - Math.min(...protectedColor);
-  const minimumChroma = inputChroma * (0.34 + highlightWeight * 0.24);
+  const chromaHighlightWeight = smoothstep(0.52, 0.9, inputLight);
+  const minimumChroma = inputChroma * (0.34 + chromaHighlightWeight * 0.24);
   if (
-    highlightWeight <= 0.02
+    chromaHighlightWeight <= 0.02
     || inputChroma <= 0.012
     || protectedChroma >= minimumChroma
   ) return protectedColor;
@@ -63,7 +67,7 @@ function protectToneRange(red, green, blue, mapped) {
     clampUnit(protectedLight + (green - inputLight) * hueScale),
     clampUnit(protectedLight + (blue - inputLight) * hueScale),
   ];
-  const blend = highlightWeight
+  const blend = chromaHighlightWeight
     * clampUnit((minimumChroma - protectedChroma) / Math.max(0.001, minimumChroma))
     * 0.86;
   return protectedColor.map((value, channel) =>

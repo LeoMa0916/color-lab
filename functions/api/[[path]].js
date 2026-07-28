@@ -3,6 +3,7 @@ const COOKIE_NAME = "color_lab_session";
 const PASSWORD_ITERATIONS = 100000;
 const REMEMBERED_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const TAB_SESSION_MS = 12 * 60 * 60 * 1000;
+const LEGAL_VERSION = "2026-07-28";
 const AUTH_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_MAX_ATTEMPTS = 10;
 const MAX_UPLOAD_BYTES = 95 * 1024 * 1024;
@@ -140,14 +141,30 @@ function parseCookies(request) {
 }
 
 function sessionCookie(request, token, remember) {
-  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
-  const maxAge = remember ? `; Max-Age=${Math.floor(REMEMBERED_SESSION_MS / 1000)}` : "";
-  return `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${secure}${maxAge}`;
+  const url = new URL(request.url);
+  const secure = url.protocol === "https:" ? "; Secure" : "";
+  const sharedDomain = ["colorslab.top", "www.colorslab.top"].includes(url.hostname)
+    ? "; Domain=colorslab.top"
+    : "";
+  const persistence = remember
+    ? `; Max-Age=${Math.floor(REMEMBERED_SESSION_MS / 1000)}; Expires=${new Date(Date.now() + REMEMBERED_SESSION_MS).toUTCString()}`
+    : "";
+  return `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${secure}${sharedDomain}${persistence}`;
 }
 
 function clearSessionCookie(request) {
-  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
-  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`;
+  const url = new URL(request.url);
+  const secure = url.protocol === "https:" ? "; Secure" : "";
+  const sharedDomain = ["colorslab.top", "www.colorslab.top"].includes(url.hostname)
+    ? "; Domain=colorslab.top"
+    : "";
+  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax${secure}${sharedDomain}; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+}
+
+function requireLegalConsent(body) {
+  if (body.acceptedTerms !== true) {
+    fail(400, "请先阅读并同意用户协议与隐私政策", "legal-consent-required");
+  }
 }
 
 function assertSameOrigin(request) {
@@ -264,6 +281,7 @@ async function clearAttempts(context, key) {
 async function register(context) {
   requireBindings(context.env);
   const body = await readJson(context.request);
+  requireLegalConsent(body);
   const usernameError = validateUsername(body.username);
   if (usernameError) fail(400, usernameError, "invalid-username");
   const passwordError = validatePassword(body.password);
@@ -282,8 +300,9 @@ async function register(context) {
   await context.env.COLOR_LAB_DB.prepare(`
     INSERT INTO users (
       id, username, username_key, password_salt, password_hash,
-      password_iterations, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      password_iterations, created_at, terms_version, privacy_version,
+      terms_accepted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     user.id,
     user.username,
@@ -291,6 +310,9 @@ async function register(context) {
     salt,
     passwordHash,
     PASSWORD_ITERATIONS,
+    Date.now(),
+    LEGAL_VERSION,
+    LEGAL_VERSION,
     Date.now(),
   ).run();
   await clearAttempts(context, limitKey);
@@ -305,6 +327,7 @@ async function register(context) {
 async function login(context) {
   requireBindings(context.env);
   const body = await readJson(context.request);
+  requireLegalConsent(body);
   const usernameKey = normalizeUsername(body.username);
   const limitKey = await rateLimitKey(context, "login", usernameKey);
   await recordAttempt(context, limitKey);
@@ -318,6 +341,10 @@ async function login(context) {
   if (!record || !constantTimeTextEqual(candidate, record.password_hash)) {
     fail(401, "用户名或密码不正确", "invalid-credentials");
   }
+  await context.env.COLOR_LAB_DB.prepare(`
+    UPDATE users SET terms_version = ?, privacy_version = ?, terms_accepted_at = ?
+    WHERE id = ?
+  `).bind(LEGAL_VERSION, LEGAL_VERSION, Date.now(), record.id).run();
   await clearAttempts(context, limitKey);
   const issued = await issueSession(
     context,

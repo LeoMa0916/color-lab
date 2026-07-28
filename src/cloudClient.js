@@ -9,6 +9,7 @@ import {
 import { deserializeClstyle, serializeClstyle } from "./styleStore";
 
 const API_ROOT = "/api";
+const CLOUD_SESSION_HINT_KEY = "color-lab.cloud-session-hint.v1";
 
 export { validatePassword, validateUsername };
 
@@ -59,10 +60,45 @@ async function request(path, options = {}) {
   }
   const response = await fetch(`${API_ROOT}${path}`, {
     ...options,
+    cache: options.cache || "no-store",
     credentials: "include",
     headers,
   });
   return parseResponse(response);
+}
+
+function readCloudSessionHint() {
+  if (typeof window === "undefined") return null;
+  try {
+    const hint = JSON.parse(window.localStorage.getItem(CLOUD_SESSION_HINT_KEY) || "null");
+    if (!hint?.remember || !hint.expiresAt || hint.expiresAt <= Date.now()) {
+      window.localStorage.removeItem(CLOUD_SESSION_HINT_KEY);
+      return null;
+    }
+    return hint;
+  } catch {
+    window.localStorage.removeItem(CLOUD_SESSION_HINT_KEY);
+    return null;
+  }
+}
+
+function updateCloudSessionHint(session) {
+  if (typeof window === "undefined") return;
+  if (session?.storageMode === "cloud" && session.remember) {
+    window.localStorage.setItem(CLOUD_SESSION_HINT_KEY, JSON.stringify({
+      username: session.username,
+      remember: true,
+      expiresAt: session.expiresAt,
+    }));
+  } else {
+    window.localStorage.removeItem(CLOUD_SESSION_HINT_KEY);
+  }
+}
+
+function clearCloudSessionHint() {
+  if (typeof window !== "undefined") {
+    window.localStorage.removeItem(CLOUD_SESSION_HINT_KEY);
+  }
 }
 
 function canUseLocalFallback(error) {
@@ -78,6 +114,7 @@ export async function registerCloudAccount(credentials) {
       method: "POST",
       body: JSON.stringify(credentials),
     });
+    updateCloudSessionHint(response.session);
     return response.session;
   } catch (error) {
     if (canUseLocalFallback(error)) {
@@ -96,6 +133,7 @@ export async function loginCloudAccount(credentials) {
       method: "POST",
       body: JSON.stringify(credentials),
     });
+    updateCloudSessionHint(response.session);
     return response.session;
   } catch (error) {
     if (canUseLocalFallback(error)) {
@@ -109,17 +147,32 @@ export async function loginCloudAccount(credentials) {
 }
 
 export async function restoreCloudSession() {
-  try {
-    const response = await request("/auth/session");
-    return response.session || null;
-  } catch (error) {
-    if (error?.status === 401) return null;
-    if (canUseLocalFallback(error)) {
-      const session = await restoreLocalSession();
-      return session ? { ...session, storageMode: "local-preview" } : null;
+  const hint = readCloudSessionHint();
+  const attempts = hint ? 3 : 1;
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await request("/auth/session");
+      const session = response.session || null;
+      if (session) updateCloudSessionHint(session);
+      else clearCloudSessionHint();
+      return session;
+    } catch (error) {
+      lastError = error;
+      if (error?.status === 401) {
+        clearCloudSessionHint();
+        return null;
+      }
+      if (canUseLocalFallback(error)) {
+        const session = await restoreLocalSession();
+        return session ? { ...session, storageMode: "local-preview" } : null;
+      }
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 280 * (attempt + 1)));
+      }
     }
-    throw error;
   }
+  throw lastError;
 }
 
 export async function logoutCloudAccount() {
@@ -128,6 +181,7 @@ export async function logoutCloudAccount() {
   } catch (error) {
     if (!canUseLocalFallback(error)) throw error;
   } finally {
+    clearCloudSessionHint();
     if (isLocalPreview()) logoutLocalAccount();
   }
 }

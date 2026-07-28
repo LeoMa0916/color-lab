@@ -43,9 +43,16 @@ assert(healthBody.database && healthBody.photos, "D1 and R2 bindings are require
 const anonymousLibrary = await request("/api/library");
 assert(anonymousLibrary.status === 401, "Anonymous users must not read the cloud library");
 
+const missingConsent = await request("/api/auth/register", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ username, password, remember: true }),
+});
+assert(missingConsent.status === 400, "Registration must require explicit legal consent");
+
 const registration = await jsonRequest("/api/auth/register", {
   method: "POST",
-  body: JSON.stringify({ username, password, remember: true }),
+  body: JSON.stringify({ username, password, remember: true, acceptedTerms: true }),
 });
 assert(registration.body.session.username === username, "Registration did not return the account");
 assert(cookie.startsWith("color_lab_session="), "HttpOnly session cookie was not issued");
@@ -102,7 +109,12 @@ cookie = "";
 const otherUsername = `cloud_qa2_${Date.now()}`;
 await jsonRequest("/api/auth/register", {
   method: "POST",
-  body: JSON.stringify({ username: otherUsername, password, remember: false }),
+  body: JSON.stringify({
+    username: otherUsername,
+    password,
+    remember: false,
+    acceptedTerms: true,
+  }),
 });
 const crossAccountDownload = await request(`/api/library/${upload.asset.id}/file`);
 assert(crossAccountDownload.status === 404, "A different account could read a private photo");

@@ -22,7 +22,7 @@ import {
   Trash2,
   UserRound,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   HUE_BANDS,
   analyzePixels,
@@ -38,7 +38,7 @@ import {
 } from "./imageFrame";
 import { analyzeSemanticCanvas } from "./semanticEngine";
 import { applyStyleLuts, cubeFromLut } from "./lut3d";
-import { buildStyleLuts } from "./styleLutEngine";
+import { buildStyleLuts, profileFingerprint } from "./styleLutEngine";
 import {
   deleteStyle,
   deserializeClstyle,
@@ -1115,6 +1115,42 @@ const BASIC_GROUPS = [
   },
 ];
 
+function InspectorDisclosure({
+  title,
+  meta = null,
+  action = null,
+  defaultOpen = false,
+  className = "",
+  children,
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const id = useId().replaceAll(":", "");
+  const panelId = `inspector-${id}`;
+  return (
+    <section className={`inspector-disclosure ${className}`.trim()}>
+      <div className="inspector-disclosure-header">
+        <button
+          type="button"
+          className="inspector-disclosure-toggle"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span>{title}</span>
+          {meta && <small>{meta}</small>}
+          <CaretDown size={15} className={open ? "open" : ""} />
+        </button>
+        {action && <div className="inspector-disclosure-action">{action}</div>}
+      </div>
+      {open && (
+        <div id={panelId} className="inspector-disclosure-body">
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function BasicAdjustmentsPanel({
   settings,
   disabled,
@@ -1122,65 +1158,50 @@ function BasicAdjustmentsPanel({
   onPreview,
   onInteractionChange,
 }) {
-  const [open, setOpen] = useState(false);
   return (
-    <section className="inspector-section basic-section">
-      <button
-        type="button"
-        className="basic-toggle"
-        aria-expanded={open}
-        aria-controls="basic-adjustments"
-        onClick={() => setOpen((value) => !value)}
-      >
-        <span>基本</span>
-        <CaretDown size={15} className={open ? "open" : ""} />
-      </button>
-      {open && (
-        <div id="basic-adjustments" className="basic-adjustments">
-          {BASIC_GROUPS.map((group) => (
-            <div className="basic-group" key={group.label}>
-              <p>{group.label}</p>
-              {group.controls.map((control) => (
-                <Range
-                  key={control.key}
-                  {...control}
-                  value={settings[control.key] ?? 0}
-                  disabled={disabled}
-                  onInteractionChange={onInteractionChange}
-                  onPreview={(value) => onPreview?.({
-                    ...settings,
-                    [control.key]: value,
-                    preset: "custom",
-                  })}
-                  onChange={(value) => onChange({
-                    [control.key]: value,
-                    preset: "custom",
-                  })}
-                />
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
+    <InspectorDisclosure title="基本" className="basic-section" defaultOpen>
+      <div className="basic-adjustments">
+        {BASIC_GROUPS.map((group) => (
+          <div className="basic-group" key={group.label}>
+            <p>{group.label}</p>
+            {group.controls.map((control) => (
+              <Range
+                key={control.key}
+                {...control}
+                value={settings[control.key] ?? 0}
+                disabled={disabled}
+                onInteractionChange={onInteractionChange}
+                onPreview={(value) => onPreview?.({
+                  ...settings,
+                  [control.key]: value,
+                  preset: "custom",
+                })}
+                onChange={(value) => onChange({
+                  [control.key]: value,
+                  preset: "custom",
+                })}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
+    </InspectorDisclosure>
   );
 }
 
 function StyleAnalysis({ profile }) {
   if (!profile) {
     return (
-      <section className="inspector-section style-analysis muted-analysis">
-        <div className="section-title"><h2>风格 DNA</h2><span>等待样片</span></div>
+      <div className="style-analysis muted-analysis">
         <p>上传参考图后分析影调、中性色、21 分区色彩与自然质感。</p>
-      </section>
+      </div>
     );
   }
   if (profile.version < 2 || !profile.tone) {
     return (
-      <section className="inspector-section style-analysis muted-analysis">
-        <div className="section-title"><h2>风格 DNA</h2><span>兼容模式</span></div>
+      <div className="style-analysis muted-analysis">
         <p>这是旧版滤镜。重新上传参考图即可生成精细色彩档案。</p>
-      </section>
+      </div>
     );
   }
   const toneMetrics = [
@@ -1194,13 +1215,7 @@ function StyleAnalysis({ profile }) {
     .filter((region) => region.coverage >= 0.004)
     .sort((left, right) => right.coverage - left.coverage);
   return (
-    <section className="inspector-section style-analysis">
-      <div className="section-title">
-        <h2>风格 DNA</h2>
-        <span className="analysis-version">
-          {semantic ? "语义区域 v4" : profile.version >= 3 ? "分区感知 v3" : "感知分析 v2"}
-        </span>
-      </div>
+    <div className="style-analysis">
       {profile.version >= 3 && (
         <p className="profile-intent">
           {semantic
@@ -1313,8 +1328,15 @@ function StyleAnalysis({ profile }) {
           );
         })}
       </div>
-    </section>
+    </div>
   );
+}
+
+function styleAnalysisMeta(profile) {
+  if (!profile) return "等待样片";
+  if (profile.version < 2 || !profile.tone) return "兼容模式";
+  if (profile.semantic) return "语义区域 v4.1";
+  return profile.version >= 3 ? "分区感知 v3" : "感知分析 v2";
 }
 
 export function App({ onLogout, session, username = "本机用户" }) {
@@ -1630,10 +1652,9 @@ export function App({ onLogout, session, username = "本机用户" }) {
 
   async function getStyleLuts(source, reference, options = {}) {
     const key = JSON.stringify({
-      source: source?.tone?.quantiles,
-      sourceSemantic: source?.semantic?.confidence,
-      reference: reference?.tone?.quantiles,
-      referenceSemantic: reference?.semantic?.confidence,
+      engine: "4.1-adaptive",
+      source: profileFingerprint(source),
+      reference: profileFingerprint(reference),
       strength: settings.strength,
       referenceLighting: settings.referenceLighting,
       adjustments: options.includeAdjustments
@@ -2357,7 +2378,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               }));
               setExportDialogOpen(true);
             }}
-          ><DownloadSimple size={17} weight="bold" />导出</button>
+          ><DownloadSimple size={17} weight="bold" />导出图片与预设</button>
         </div>
       </header>
       {exported && <div className="toast glass-surface" role="status"><Check size={16} weight="bold" />已导出当前照片</div>}
@@ -2546,11 +2567,16 @@ export function App({ onLogout, session, username = "本机用户" }) {
         </section>
 
         <aside className="right-panel glass-panel">
-          <section className="inspector-section histogram-section">
-            <div className="section-title"><h2>直方图</h2><CaretDown size={15} /></div>
+          <InspectorDisclosure title="直方图" meta="RGB" className="histogram-section" defaultOpen>
             <HistogramCanvas histogram={displayHistogram || active?.stats?.histogram} />
-          </section>
-          <StyleAnalysis profile={referenceStats} />
+          </InspectorDisclosure>
+          <InspectorDisclosure
+            title="风格 DNA"
+            meta={styleAnalysisMeta(referenceStats)}
+            className="style-analysis-section"
+          >
+            <StyleAnalysis profile={referenceStats} />
+          </InspectorDisclosure>
           <BasicAdjustmentsPanel
             settings={settings}
             disabled={!active}
@@ -2558,8 +2584,19 @@ export function App({ onLogout, session, username = "本机用户" }) {
             onPreview={previewBasic}
             onInteractionChange={setBasicDragging}
           />
-          <section className="inspector-section curve-section">
-            <div className="section-title"><h2>曲线</h2><GlassButton className="reset-curve" onClick={() => updateCurve(structuredClone(DEFAULT_CURVES[channel]))}><ArrowCounterClockwise size={13} />重置</GlassButton></div>
+          <InspectorDisclosure
+            title="曲线"
+            meta={CHANNELS.find((item) => item.id === channel)?.label}
+            className="curve-section"
+            action={(
+              <GlassButton
+                className="reset-curve"
+                onClick={() => updateCurve(structuredClone(DEFAULT_CURVES[channel]))}
+              >
+                <ArrowCounterClockwise size={13} />重置
+              </GlassButton>
+            )}
+          >
             <div className="channel-tabs glass-surface">
               {CHANNELS.map((item) => (
                 <button
@@ -2578,9 +2615,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
               onInteractionChange={setCurveDragging}
             />
             <p className="curve-help">点击添加控制点 · 拖动时实时预览 · 双击删除</p>
-          </section>
-          <section className="inspector-section effects-section">
-            <div className="section-title"><h2>效果</h2></div>
+          </InspectorDisclosure>
+          <InspectorDisclosure title="效果" meta="颗粒与质感" className="effects-section">
             <Range
               label="胶片颗粒"
               value={settings.grain}
@@ -2642,11 +2678,11 @@ export function App({ onLogout, session, username = "本机用户" }) {
               onInteractionChange={setBasicDragging}
               onChange={(grainHighlights) => updateActiveSettings({ grainHighlights, preset: "custom" })}
             />
-          </section>
-          <section className="palette-section">
+          </InspectorDisclosure>
+          <InspectorDisclosure title="参考色板" meta="七色取样" className="palette-section">
             <div>{palette.map((color) => <span key={color} style={{ background: color }} />)}</div>
             <p>{referenceStats ? `参考色彩 · ${referenceStats.saturation < 0.35 ? "克制饱和" : "鲜明色彩"} · 21 分区取色` : "上传参考图生成色板"}</p>
-          </section>
+          </InspectorDisclosure>
         </aside>
       </section>
       {!!importErrors.length && (
@@ -2776,19 +2812,30 @@ export function App({ onLogout, session, username = "本机用户" }) {
           if (!isExporting) setExportDialogOpen(false);
         }}>
           <section className="modal export-modal glass-panel" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="modal-title"><div><DownloadSimple size={18} /><h2>导出</h2></div><GlassButton className="mini-button" disabled={isExporting} onClick={() => setExportDialogOpen(false)}><X size={14} /></GlassButton></div>
-            <div className="export-grid">
-              <label className="field-label full">文件名称<input value={exportOptions.name} onChange={(event) => setExportOptions({ ...exportOptions, name: event.target.value })} /></label>
-              <label className="field-label">像素大小<select value={exportOptions.resolution} onChange={(event) => setExportOptions({ ...exportOptions, resolution: event.target.value })}><option value="original">原始完整尺寸</option><option value="4k">4K · 最长边 3840</option><option value="2k">2K · 最长边 2560</option><option value="1080p">1080p · 最长边 1920</option></select></label>
-              <label className="field-label">图片格式<select value={exportOptions.format} onChange={(event) => setExportOptions({ ...exportOptions, format: event.target.value })}><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option><option value="bmp">BMP</option></select></label>
-              <label className="field-label full">质量 <span>{exportOptions.quality}%</span><input type="range" min="50" max="100" value={exportOptions.quality} disabled={!["jpeg", "webp"].includes(exportOptions.format)} onChange={(event) => setExportOptions({ ...exportOptions, quality: Number(event.target.value) })} /></label>
+            <div className="modal-title"><div><DownloadSimple size={18} /><h2>导出图片与专业预设</h2></div><GlassButton className="mini-button" disabled={isExporting} onClick={() => setExportDialogOpen(false)}><X size={14} /></GlassButton></div>
+            <div className="export-image-panel">
+              <div className="export-block-heading">
+                <div><strong>成片导出</strong><span>原始尺寸 · 4K · 2K · 1080p</span></div>
+                <small>JPEG / PNG / WebP / BMP</small>
+              </div>
+              <div className="export-grid">
+                <label className="field-label full">文件名称<input value={exportOptions.name} onChange={(event) => setExportOptions({ ...exportOptions, name: event.target.value })} /></label>
+                <label className="field-label">像素大小<select value={exportOptions.resolution} onChange={(event) => setExportOptions({ ...exportOptions, resolution: event.target.value })}><option value="original">原始完整尺寸</option><option value="4k">4K · 最长边 3840</option><option value="2k">2K · 最长边 2560</option><option value="1080p">1080p · 最长边 1920</option></select></label>
+                <label className="field-label">图片格式<select value={exportOptions.format} onChange={(event) => setExportOptions({ ...exportOptions, format: event.target.value })}><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option><option value="bmp">BMP</option></select></label>
+                <label className="field-label full">质量 <span>{exportOptions.quality}%</span><input type="range" min="50" max="100" value={exportOptions.quality} disabled={!["jpeg", "webp"].includes(exportOptions.format)} onChange={(event) => setExportOptions({ ...exportOptions, quality: Number(event.target.value) })} /></label>
+              </div>
             </div>
             <div className="preset-export">
-              <div><strong>导出调色预设</strong><p>CLSTYLE 保留完整 V4 风格；33³ CUBE 仅包含全局色彩与曲线，无法写入语义局部 LUT、质感和颗粒。</p></div>
               <div>
-                <GlassButton onClick={exportClstyle}>导出 CLSTYLE</GlassButton>
-                <GlassButton onClick={() => exportPreset("xmp")}>导出 XMP</GlassButton>
-                <GlassButton onClick={() => exportPreset("cube")}>导出 33³ CUBE</GlassButton>
+                <span className="preset-export-badge">DIRECT PRESET EXPORT</span>
+                <strong>带走这套颜色，在专业软件继续编辑</strong>
+                <p>XMP 可用于 Lightroom / Camera Raw；33³ CUBE LUT 可用于 Photoshop、DaVinci Resolve 等支持 LUT 的软件；CLSTYLE 保留完整 V4.1 语义风格。</p>
+                <small>标准 CUBE 无法包含语义局部调整、质感和随机颗粒。</small>
+              </div>
+              <div>
+                <GlassButton className="preset-primary" onClick={() => exportPreset("xmp")}>Lightroom XMP</GlassButton>
+                <GlassButton className="preset-primary" onClick={() => exportPreset("cube")}>33³ CUBE LUT</GlassButton>
+                <GlassButton onClick={exportClstyle}>完整 CLSTYLE</GlassButton>
               </div>
             </div>
             <div className="dialog-actions"><GlassButton disabled={isExporting} onClick={() => setExportDialogOpen(false)}>取消</GlassButton><button className="primary-button" disabled={isExporting} onClick={exportImage}>{isExporting ? "正在导出…" : "导出图片"}</button></div>
