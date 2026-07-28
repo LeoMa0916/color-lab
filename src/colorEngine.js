@@ -733,34 +733,47 @@ export function createToneLutV3(source, reference, strength) {
   }
   const map = monotoneToneMap(sourceValues, targetValues);
   const lut = new Float32Array(1024);
+  const sourceRange = Math.max(
+    0.04,
+    ((sourceValues[9] ?? 255) - (sourceValues[1] ?? 0)) / 255,
+  );
+  const targetRange = Math.max(
+    0.04,
+    ((targetValues[9] ?? 255) - (targetValues[1] ?? 0)) / 255,
+  );
+  const rangeCompression = clampUnit((sourceRange - targetRange) / sourceRange);
+  const targetMidtone = (targetValues[5] ?? 128) / 255;
+  const sourceMidtone = (sourceValues[5] ?? 128) / 255;
+  const midtoneDistance = Math.abs(targetMidtone - sourceMidtone);
   let previous = 0;
   for (let value = 0; value < 1024; value += 1) {
     const input = value / 1023;
     const mapped = map(input * 255) / 255;
-    // V4.1 keeps the absolute endpoints stable while allowing the photographed
-    // toe, midtones and highlight shoulder to follow the reference much more
-    // closely. The former cap started suppressing highlight intent around 58%,
-    // which made soft film references look almost identical to the source.
-    const endpointProtection = smoothstep(0.002, 0.028, input)
-      * (1 - smoothstep(0.974, 0.999, input));
+    // V4.2 makes the guard adaptive. A genuinely compressed reference is
+    // allowed to lift the toe and bend the shoulder substantially, while the
+    // final few code values stay anchored so specular detail cannot turn into
+    // a flat grey ceiling.
+    const endpointProtection = smoothstep(0.0015, 0.018, input)
+      * (1 - smoothstep(0.996, 1, input));
     const midtoneWeight = 1 - Math.min(1, Math.abs(input - 0.5) * 2);
-    const highlightWeight = smoothstep(0.86, 0.985, input);
-    const shadowWeight = 1 - smoothstep(0.018, 0.16, input);
-    const maximumLift = (0.038 + midtoneWeight * 0.048)
-      * (1 - highlightWeight * 0.72)
-      * (1 - shadowWeight * 0.12);
-    const maximumDrop = (0.045 + midtoneWeight * 0.055)
-      * (1 - highlightWeight * 0.68)
-      * (1 - shadowWeight * 0.1);
+    const highlightWeight = smoothstep(0.72, 0.985, input);
+    const shadowWeight = 1 - smoothstep(0.025, 0.34, input);
+    const adaptiveLatitude = rangeCompression * (0.29 + midtoneDistance * 0.16);
+    const maximumLift = 0.037
+      + midtoneWeight * 0.048
+      + adaptiveLatitude * (0.72 + shadowWeight * 0.38);
+    const maximumDrop = 0.043
+      + midtoneWeight * 0.052
+      + adaptiveLatitude * (0.76 + highlightWeight * 0.42);
     const shift = mapped - input;
     const guardedMapped = input + Math.max(
       -maximumDrop,
       Math.min(maximumLift, shift),
     );
-    const shoulderBlend = 1 - smoothstep(0.985, 1, input);
+    const shoulderBlend = 1 - smoothstep(0.996, 1, input);
     const adjusted = input + (guardedMapped - input)
       * strength
-      * Math.max(endpointProtection, shoulderBlend * 0.16);
+      * Math.max(endpointProtection, shoulderBlend * 0.12);
     previous = Math.max(previous, clampUnit(adjusted));
     lut[value] = previous;
   }

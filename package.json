@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "verify:auth": "node scripts/verify-auth.mjs",
+    "verify:batch": "node scripts/verify-batch-export.mjs",
     "verify:cloud": "node scripts/verify-cloud-api.mjs",
     "verify:basic": "node scripts/verify-basic-adjustments.mjs",
     "verify:browser": "node scripts/verify-browser-e2e.mjs",

@@ -4,14 +4,24 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const project = dirname(dirname(fileURLToPath(import.meta.url)));
-const previewPort = 4174;
+const previewPort = await new Promise((resolve, reject) => {
+  const server = createServer();
+  server.unref();
+  server.once("error", reject);
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    server.close(() => resolve(address.port));
+  });
+});
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -214,19 +224,22 @@ try {
   assert(legalDialog.withinViewport, "Legal dialog exceeds the desktop viewport");
   await evaluate(cdp, "document.querySelector('.legal-dialog > header > button').click()");
   await waitFor(cdp, "!document.querySelector('.legal-dialog')");
+  await evaluate(cdp, "document.querySelector('[data-testid=\"auth-register-tab\"]').click()");
+  await delay(120);
   await evaluate(cdp, `(() => {
     const setValue = (input, value) => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
       input.dispatchEvent(new Event('input', { bubbles: true }));
     };
-    document.querySelector('[data-testid="auth-register-tab"]').click();
     setValue(document.querySelector('input[autocomplete="username"]'), 'engine_qa');
     const passwords = document.querySelectorAll('input[autocomplete="new-password"]');
     setValue(passwords[0], 'EngineQA2026');
     setValue(passwords[1], 'EngineQA2026');
-    document.querySelector('[data-testid="legal-consent"]').click();
-    document.querySelector('[data-testid="auth-submit"]').click();
   })()`);
+  await delay(80);
+  await evaluate(cdp, "document.querySelector('[data-testid=\"legal-consent\"]').click()");
+  await delay(80);
+  await evaluate(cdp, "document.querySelector('[data-testid=\"auth-submit\"]').click()");
   await waitFor(cdp, "document.readyState === 'complete' && document.querySelector('.demo-button')");
   await evaluate(cdp, "document.querySelector('.demo-button').click()");
   await waitFor(
@@ -234,6 +247,75 @@ try {
     "document.querySelectorAll('.reference-thumb').length >= 2 && document.querySelectorAll('.target-thumb').length >= 5 && document.querySelector('canvas.styled')?.width > 0",
   );
   await delay(1500);
+  const selectedBefore = await evaluate(cdp, `(() => {
+    const selectedBefore = document.querySelectorAll('.target-thumb.selected').length;
+    document.querySelector('.target-selection-actions button:last-child').click();
+    const selectors = document.querySelectorAll('.target-select');
+    selectors[0].click();
+    selectors[1].click();
+    return selectedBefore;
+  })()`);
+  await waitFor(cdp, "document.querySelectorAll('.target-thumb.selected').length === 2");
+  const batchWorkflow = await evaluate(cdp, `(() => ({
+      selectedAfter: document.querySelectorAll('.target-thumb.selected').length,
+      exportLabel: document.querySelector('.header-actions > .primary-button')?.textContent.trim()
+  }))()`);
+  assert(selectedBefore === 5, "Newly imported target photos are not selected for batch export");
+  assert(batchWorkflow.selectedAfter === 2, "Target multi-selection did not retain two photos");
+  assert(batchWorkflow.exportLabel.includes("2"), "Batch export count is not visible in the primary action");
+
+  await evaluate(cdp, "document.querySelector('.reference-thumb').click()");
+  await waitFor(cdp, "document.querySelector('.reference-preview-modal img')");
+  const referencePreview = await evaluate(cdp, `(() => {
+    const modal = document.querySelector('.reference-preview-modal');
+    return {
+      visible: modal.getBoundingClientRect().height > 100,
+      name: modal.querySelector('.reference-preview-meta strong')?.textContent
+    };
+  })()`);
+  assert(referencePreview.visible && referencePreview.name, "Reference sample preview did not open");
+  await evaluate(cdp, "document.querySelector('.reference-preview-modal .mini-button').click()");
+  await waitFor(cdp, "!document.querySelector('.reference-preview-modal')");
+
+  await evaluate(cdp, "document.querySelector('.header-actions > .primary-button').click()");
+  await waitFor(cdp, "document.querySelector('.export-destination')");
+  const exportDialog = await evaluate(cdp, `(() => ({
+    title: document.querySelector('.export-block-heading strong')?.textContent,
+    destination: document.querySelector('.export-destination strong')?.textContent,
+    button: document.querySelector('.export-modal .dialog-actions .primary-button')?.textContent.trim()
+  }))()`);
+  assert(exportDialog.title.includes("2"), "Export dialog does not describe the selected batch");
+  assert(exportDialog.destination.includes("默认下载位置"), "Export destination fallback is missing");
+  assert(exportDialog.button.includes("2"), "Batch export button does not include the selection count");
+  await evaluate(cdp, "document.querySelector('.export-modal .modal-title .mini-button').click()");
+  await waitFor(cdp, "!document.querySelector('.export-modal')");
+
+  await evaluate(cdp, `(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['preview'], 'wechat-drag.jpg', { type: 'image/jpeg' }));
+    document.body.dispatchEvent(new DragEvent('dragenter', { bubbles: true, dataTransfer: transfer }));
+  })()`);
+  await waitFor(cdp, "document.querySelector('.drag-import-overlay')");
+  const dragChoices = await evaluate(
+    cdp,
+    "document.querySelectorAll('.drag-import-zone').length",
+  );
+  assert(dragChoices === 2, "Page-level drag import does not expose reference and target choices");
+  await evaluate(cdp, `(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['preview'], 'wechat-drag.jpg', { type: 'image/jpeg' }));
+    document.body.dispatchEvent(new DragEvent('dragleave', { bubbles: true, dataTransfer: transfer }));
+  })()`);
+  await waitFor(cdp, "!document.querySelector('.drag-import-overlay')");
+  const desktopShot = await cdp.send("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+  });
+  writeFileSync(
+    join(project, "qa-private", "batch-workflow-desktop.png"),
+    Buffer.from(desktopShot.data, "base64"),
+  );
+
   const disclosures = await evaluate(
     cdp,
     "document.querySelectorAll('.right-panel .inspector-disclosure-toggle').length",
@@ -319,6 +401,14 @@ try {
   })`);
   assert(mobile.width === 390, `Unexpected mobile viewport width: ${mobile.width}`);
   assert(mobile.scrollWidth === mobile.width, "Mobile layout overflows horizontally");
+  const mobileShot = await cdp.send("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+  });
+  writeFileSync(
+    join(project, "qa-private", "batch-workflow-mobile.png"),
+    Buffer.from(mobileShot.data, "base64"),
+  );
 
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 844,

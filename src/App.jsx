@@ -16,9 +16,13 @@ import {
   CircleCheck,
   Cloud,
   CloudOff,
+  FolderOpen,
   History,
+  Images,
   LogOut,
+  Maximize2,
   RefreshCw,
+  Square,
   Trash2,
   UserRound,
 } from "lucide-react";
@@ -47,6 +51,7 @@ import {
   serializeClstyle,
 } from "./styleStore";
 import { applyTextureMatch } from "./textureEngine";
+import { createZipBlob } from "./zipEncoding";
 import { engineWorker } from "./engineClient";
 import {
   createRenderPipeline,
@@ -642,6 +647,52 @@ function saveBlob(blob, filename) {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(anchor.href), 1800);
+}
+
+function safeFileStem(value, fallback = "ColorLab") {
+  const normalized = String(value || "")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.\s]+$/g, "");
+  return normalized || fallback;
+}
+
+async function writeBlobToDirectory(directory, blob, filename) {
+  if (!directory) return false;
+  if (directory.queryPermission) {
+    const current = await directory.queryPermission({ mode: "readwrite" });
+    const permission = current === "granted"
+      ? current
+      : await directory.requestPermission?.({ mode: "readwrite" });
+    if (permission !== "granted") throw new Error("未获得所选文件夹的写入权限");
+  }
+  const fileHandle = await directory.getFileHandle(filename, { create: true });
+  const writable = await fileHandle.createWritable();
+  try {
+    await writable.write(blob);
+  } finally {
+    await writable.close();
+  }
+  return true;
+}
+
+function droppedFiles(dataTransfer) {
+  const files = [];
+  const seen = new Set();
+  const push = (file) => {
+    if (!file) return;
+    const key = `${file.name}:${file.size}:${file.lastModified}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    files.push(file);
+  };
+  [...(dataTransfer?.items || [])].forEach((item) => {
+    if (item.kind === "file") push(item.getAsFile());
+  });
+  [...(dataTransfer?.files || [])].forEach(push);
+  return files;
 }
 
 function xmpPreset(settings, name) {
@@ -1335,7 +1386,7 @@ function StyleAnalysis({ profile }) {
 function styleAnalysisMeta(profile) {
   if (!profile) return "等待样片";
   if (profile.version < 2 || !profile.tone) return "兼容模式";
-  if (profile.semantic) return "语义区域 v4.1";
+  if (profile.semantic) return "语义区域 v4.2";
   return profile.version >= 3 ? "分区感知 v3" : "感知分析 v2";
 }
 
@@ -1344,6 +1395,9 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const [referenceStats, setReferenceStats] = useState(null);
   const [targets, setTargets] = useState([]);
   const [activeId, setActiveId] = useState(null);
+  const [selectedTargetIds, setSelectedTargetIds] = useState([]);
+  const [referencePreview, setReferencePreview] = useState(null);
+  const [dragImportActive, setDragImportActive] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [decodeStatus, setDecodeStatus] = useState("");
   const [split, setSplit] = useState(50);
@@ -1372,6 +1426,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const [styleDialogOpen, setStyleDialogOpen] = useState(false);
   const [styleName, setStyleName] = useState("");
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportDirectory, setExportDirectory] = useState(null);
   const [exportOptions, setExportOptions] = useState({
     name: "diaoseshi-export",
     resolution: "original",
@@ -1387,14 +1442,78 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const curvePreviewOutput = useRef(null);
   const semanticMaskCache = useRef(new Map());
   const styleLutCache = useRef(new Map());
+  const selectionAnchor = useRef(null);
+  const dragDepth = useRef(0);
   const referenceInput = useRef(null);
   const targetInput = useRef(null);
   const styleInput = useRef(null);
   const active = targets.find((item) => item.id === activeId) || targets[0] || null;
   const settings = active?.settings || defaultSettings();
+  const selectedTargets = useMemo(() => {
+    const selected = new Set(selectedTargetIds);
+    const matches = targets.filter((item) => selected.has(item.id));
+    return matches.length ? matches : active ? [active] : [];
+  }, [active, selectedTargetIds, targets]);
   const palette = useMemo(() => makePalette(referenceStats), [referenceStats]);
   const isReady = references.length > 0 && referenceStats && active;
   const cloudEnabled = session?.storageMode === "cloud";
+
+  useEffect(() => {
+    const containsFiles = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+    const onDragEnter = (event) => {
+      if (!containsFiles(event)) return;
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDragImportActive(true);
+    };
+    const onDragOver = (event) => {
+      if (!containsFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    };
+    const onDragLeave = (event) => {
+      if (!containsFiles(event)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (!dragDepth.current) setDragImportActive(false);
+    };
+    const onDrop = (event) => {
+      if (!containsFiles(event)) return;
+      event.preventDefault();
+      dragDepth.current = 0;
+      setDragImportActive(false);
+      const files = droppedFiles(event.dataTransfer);
+      if (!files.length) {
+        setImportErrors([
+          "拖放来源没有向浏览器提供可读取的图片。若微信当前版本不支持直接拖出，请先将图片另存到本机后再拖入。",
+        ]);
+        return;
+      }
+      if (analyzing || isExporting) {
+        setImportErrors(["请等待当前分析或导出任务完成后再导入照片。"]);
+        return;
+      }
+      void addTargets(files);
+    };
+    document.addEventListener("dragenter", onDragEnter);
+    document.addEventListener("dragover", onDragOver);
+    document.addEventListener("dragleave", onDragLeave);
+    document.addEventListener("drop", onDrop);
+    return () => {
+      document.removeEventListener("dragenter", onDragEnter);
+      document.removeEventListener("dragover", onDragOver);
+      document.removeEventListener("dragleave", onDragLeave);
+      document.removeEventListener("drop", onDrop);
+    };
+  }, [analyzing, isExporting, references.length, targets.length]);
+
+  useEffect(() => {
+    if (!referencePreview) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") setReferencePreview(null);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [referencePreview]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1650,27 +1769,33 @@ export function App({ onLogout, session, username = "本机用户" }) {
     );
   }
 
-  async function getStyleLuts(source, reference, options = {}) {
+  async function getStyleLuts(
+    source,
+    reference,
+    options = {},
+    renderSettings = settings,
+    photoId = active?.id,
+  ) {
     const key = JSON.stringify({
-      engine: "4.1-adaptive",
+      engine: "4.2-optical-softness",
       source: profileFingerprint(source),
       reference: profileFingerprint(reference),
-      strength: settings.strength,
-      referenceLighting: settings.referenceLighting,
+      strength: renderSettings.strength,
+      referenceLighting: renderSettings.referenceLighting,
       adjustments: options.includeAdjustments
         ? {
-          temperature: settings.temperature,
-          tint: settings.tint,
-          exposure: settings.exposure,
-          contrast: settings.contrast,
-          highlights: settings.highlights,
-          shadows: settings.shadows,
-          whites: settings.whites,
-          blacks: settings.blacks,
-          vibrance: settings.vibrance,
-          saturation: settings.saturation,
-          dehaze: settings.dehaze,
-          curves: settings.curves,
+          temperature: renderSettings.temperature,
+          tint: renderSettings.tint,
+          exposure: renderSettings.exposure,
+          contrast: renderSettings.contrast,
+          highlights: renderSettings.highlights,
+          shadows: renderSettings.shadows,
+          whites: renderSettings.whites,
+          blacks: renderSettings.blacks,
+          vibrance: renderSettings.vibrance,
+          saturation: renderSettings.saturation,
+          dehaze: renderSettings.dehaze,
+          curves: renderSettings.curves,
         }
         : false,
     });
@@ -1678,11 +1803,11 @@ export function App({ onLogout, session, username = "本机用户" }) {
       if (styleLutCache.current.size >= 8) styleLutCache.current.clear();
       const task = engineWorker.run(
         "build-luts",
-        { source, reference, settings, options },
-        { photoId: `lut:${active?.id || "style"}:${options.includeAdjustments ? "export" : "preview"}` },
+        { source, reference, settings: renderSettings, options },
+        { photoId: `lut:${photoId || "style"}:${options.includeAdjustments ? "export" : "preview"}` },
       ).catch((error) => {
         if (error?.name === "AbortError") throw error;
-        return buildStyleLuts(source, reference, settings, options);
+        return buildStyleLuts(source, reference, renderSettings, options);
       });
       styleLutCache.current.set(key, task);
     }
@@ -1774,21 +1899,48 @@ export function App({ onLogout, session, username = "本机用户" }) {
     if (!referenceStats) return;
     const name = exportOptions.name.trim() || active?.name.replace(/\.[^.]+$/, "") || "Color Style";
     const style = await createStylePayload(name);
-    saveBlob(
+    await deliverExport(
       new Blob([serializeClstyle(style)], { type: "application/json" }),
-      `${name}.clstyle`,
+      `${safeFileStem(name)}.clstyle`,
     );
   }
 
-  async function exportImage() {
-    if (!active || isExporting) return;
+  async function chooseExportDirectory() {
+    if (typeof window.showDirectoryPicker !== "function") {
+      setImportErrors([
+        "当前浏览器不支持直接选择导出文件夹，将使用浏览器默认下载位置。桌面 Chrome / Edge 可使用此功能。",
+      ]);
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker({
+        id: "color-lab-export",
+        mode: "readwrite",
+        startIn: "pictures",
+      });
+      setExportDirectory(handle);
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        setImportErrors([`无法使用所选文件夹：${error?.message || "请检查浏览器权限"}`]);
+      }
+    }
+  }
+
+  async function deliverExport(blob, filename) {
+    if (exportDirectory) {
+      await writeBlobToDirectory(exportDirectory, blob, filename);
+      return;
+    }
+    saveBlob(blob, filename);
+  }
+
+  async function renderTargetExport(target, targetIndex, totalTargets) {
     const longEdge = {
       original: Number.POSITIVE_INFINITY,
       "4k": 3840,
       "2k": 2560,
       "1080p": 1920,
     }[exportOptions.resolution];
-    const filename = exportOptions.name.trim() || "diaoseshi-export";
     const mime = {
       jpeg: "image/jpeg",
       png: "image/png",
@@ -1796,164 +1948,199 @@ export function App({ onLogout, session, username = "本机用户" }) {
       bmp: "image/bmp",
     }[exportOptions.format];
     const extension = exportOptions.format === "jpeg" ? "jpg" : exportOptions.format;
+    const report = (stage, localProgress) => setBusyTask({
+      kind: "export",
+      label: target.name,
+      stage,
+      current: targetIndex + 1,
+      total: totalTargets,
+      progress: Math.min(
+        100,
+        Math.round((targetIndex + Math.max(0.02, localProgress)) / totalTargets * 100),
+      ),
+    });
+    report("正在准备原始图片", 0.02);
+    await waitForPaint();
+
+    let source;
+    if (target.raw && target.sourceFile) {
+      source = (await decodeRawCanvas(
+        target.sourceFile,
+        longEdge,
+        false,
+        {
+          onProgress: ({ stage, progress }) => report(stage, progress * 0.08),
+        },
+      )).canvas;
+    } else {
+      source = document.createElement("canvas");
+      const originalWidth = target.metadata?.width;
+      const originalHeight = target.metadata?.height;
+      const canResizeBitmap = target.sourceFile
+        && typeof createImageBitmap === "function"
+        && originalWidth
+        && originalHeight;
+      let image;
+      if (canResizeBitmap) {
+        const scale = Number.isFinite(longEdge)
+          ? Math.min(1, longEdge / Math.max(originalWidth, originalHeight))
+          : 1;
+        report("正在解码原始分辨率", 0.04);
+        image = await createImageBitmap(target.sourceFile, {
+          imageOrientation: "from-image",
+          resizeWidth: Math.max(1, Math.round(originalWidth * scale)),
+          resizeHeight: Math.max(1, Math.round(originalHeight * scale)),
+          resizeQuality: "high",
+        });
+      } else {
+        image = await loadImage(target.url);
+      }
+      const scale = Number.isFinite(longEdge)
+        ? Math.min(1, longEdge / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height))
+        : 1;
+      source.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+      source.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+      const context = source.getContext("2d", { willReadFrequently: true });
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(image, 0, 0, source.width, source.height);
+      image.close?.();
+    }
+
+    report("正在识别画面区域", 0.07);
+    const analysisCanvas = makeAnalysisCanvas(source);
+    const semanticMasks = await analyzeSemanticCanvas(analysisCanvas, {
+      timeoutMs: IS_MOBILE ? 2600 : 6500,
+    });
+    report("正在读取完整像素", 0.09);
+    await waitForPaint();
+    const context = source.getContext("2d", { willReadFrequently: true });
+    const imageData = context.getImageData(0, 0, source.width, source.height);
+    const analysisContext = analysisCanvas.getContext("2d", { willReadFrequently: true });
+    const analysisData = analysisContext.getImageData(
+      0,
+      0,
+      analysisCanvas.width,
+      analysisCanvas.height,
+    ).data;
+    const sourceProfile = target.stats || await engineWorker.run(
+      "analyze",
+      {
+        data: analysisData,
+        options: {
+          width: analysisCanvas.width,
+          height: analysisCanvas.height,
+          semanticMasks,
+        },
+      },
+      { photoId: `export-analysis:${target.id}` },
+    );
+    const targetSettings = target.settings || defaultSettings();
+    const styleLuts = await getStyleLuts(
+      sourceProfile,
+      referenceStats || sourceProfile,
+      {},
+      targetSettings,
+      target.id,
+    );
+    const rendered = await engineWorker.run(
+      "render-export",
+      {
+        data: imageData.data,
+        width: source.width,
+        height: source.height,
+        styleLuts,
+        semanticMasks,
+        source: sourceProfile,
+        reference: referenceStats || sourceProfile,
+        settings: targetSettings,
+        output: {
+          format: exportOptions.format,
+          mime,
+          extension,
+          quality: exportOptions.quality / 100,
+        },
+      },
+      {
+        photoId: `export-render:${target.id}`,
+        transfer: [imageData.data.buffer],
+        onProgress: (progress) => report(progress.label, progress.percent / 100),
+      },
+    );
+
+    if (rendered.blob) return { blob: rendered.blob, extension: rendered.extension };
+    if (rendered.buffer) {
+      return {
+        blob: new Blob([rendered.buffer], { type: rendered.mime }),
+        extension: rendered.extension,
+      };
+    }
+    const outputCanvas = document.createElement("canvas");
+    outputCanvas.width = rendered.width;
+    outputCanvas.height = rendered.height;
+    outputCanvas.getContext("2d").putImageData(
+      new ImageData(rendered.data, rendered.width, rendered.height),
+      0,
+      0,
+    );
+    const blob = await new Promise((resolve) =>
+      outputCanvas.toBlob(resolve, mime, exportOptions.quality / 100),
+    );
+    if (!blob) throw new Error("浏览器无法编码当前图片");
+    return { blob, extension };
+  }
+
+  async function exportImage() {
+    if (!active || isExporting) return;
+    const exportTargets = selectedTargets;
+    if (!exportTargets.length) return;
+    const archiveName = safeFileStem(exportOptions.name, "ColorLab-batch");
+    const exportedFiles = [];
+    const duplicateNames = new Map();
     setIsExporting(true);
     setProcessing(true);
-    setBusyTask({
-      kind: "export",
-      label: active.name,
-      stage: "正在准备原始图片",
-      progress: 2,
-    });
     await waitForPaint();
     try {
-      let source;
-      if (active.raw && active.sourceFile) {
-        source = (await decodeRawCanvas(
-          active.sourceFile,
-          longEdge,
-          false,
-          {
-            onProgress: ({ stage, progress }) => setBusyTask({
-              kind: "export",
-              label: active.name,
-              stage,
-              progress: Math.max(2, Math.round(progress * 7)),
-            }),
-          },
-        )).canvas;
-      } else {
-        source = document.createElement("canvas");
-        const originalWidth = active.metadata?.width;
-        const originalHeight = active.metadata?.height;
-        const canResizeBitmap = active.sourceFile
-          && typeof createImageBitmap === "function"
-          && originalWidth
-          && originalHeight;
-        let image;
-        if (canResizeBitmap) {
-          const scale = Number.isFinite(longEdge)
-            ? Math.min(1, longEdge / Math.max(originalWidth, originalHeight))
-            : 1;
+      for (let index = 0; index < exportTargets.length; index += 1) {
+        const target = exportTargets[index];
+        const rendered = await renderTargetExport(target, index, exportTargets.length);
+        const sourceStem = exportTargets.length === 1
+          ? archiveName
+          : `${safeFileStem(target.name, `photo-${index + 1}`)}-ColorLab`;
+        const occurrence = (duplicateNames.get(sourceStem) || 0) + 1;
+        duplicateNames.set(sourceStem, occurrence);
+        const stem = occurrence > 1 ? `${sourceStem}-${occurrence}` : sourceStem;
+        const filename = `${stem}.${rendered.extension}`;
+        if (exportDirectory) {
+          await writeBlobToDirectory(exportDirectory, rendered.blob, filename);
+        } else {
+          exportedFiles.push({ name: filename, blob: rendered.blob });
+        }
+      }
+      if (!exportDirectory) {
+        if (exportedFiles.length === 1) {
+          saveBlob(exportedFiles[0].blob, exportedFiles[0].name);
+        } else {
           setBusyTask({
             kind: "export",
-            label: active.name,
-            stage: "正在解码原始分辨率",
-            progress: 4,
+            label: `${exportedFiles.length} 张照片`,
+            stage: "正在打包批量成片",
+            current: exportedFiles.length,
+            total: exportedFiles.length,
+            progress: 98,
           });
-          image = await createImageBitmap(active.sourceFile, {
-            imageOrientation: "from-image",
-            resizeWidth: Math.max(1, Math.round(originalWidth * scale)),
-            resizeHeight: Math.max(1, Math.round(originalHeight * scale)),
-            resizeQuality: "high",
-          });
-        } else {
-          image = await loadImage(active.url);
+          saveBlob(
+            await createZipBlob(exportedFiles),
+            `${archiveName}-${exportedFiles.length}张.zip`,
+          );
         }
-        const scale = Number.isFinite(longEdge)
-          ? Math.min(1, longEdge / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height))
-          : 1;
-        source.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
-        source.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
-        const context = source.getContext("2d", { willReadFrequently: true });
-        context.imageSmoothingEnabled = true;
-        context.imageSmoothingQuality = "high";
-        context.drawImage(image, 0, 0, source.width, source.height);
-        image.close?.();
-      }
-
-      setBusyTask({
-        kind: "export",
-        label: active.name,
-        stage: "正在识别画面区域",
-        progress: 7,
-      });
-      const analysisCanvas = makeAnalysisCanvas(source);
-      const semanticMasks = await analyzeSemanticCanvas(analysisCanvas, {
-        timeoutMs: IS_MOBILE ? 2600 : 6500,
-      });
-      setBusyTask({
-        kind: "export",
-        label: active.name,
-        stage: "正在读取完整像素",
-        progress: 9,
-      });
-      await waitForPaint();
-      const context = source.getContext("2d", { willReadFrequently: true });
-      const imageData = context.getImageData(0, 0, source.width, source.height);
-      const analysisContext = analysisCanvas.getContext("2d", { willReadFrequently: true });
-      const analysisData = analysisContext.getImageData(
-        0,
-        0,
-        analysisCanvas.width,
-        analysisCanvas.height,
-      ).data;
-      const sourceProfile = active.stats || await engineWorker.run(
-        "analyze",
-        {
-          data: analysisData,
-          options: {
-            width: analysisCanvas.width,
-            height: analysisCanvas.height,
-            semanticMasks,
-          },
-        },
-        { photoId: `export-analysis:${active.id}` },
-      );
-      const styleLuts = await getStyleLuts(
-        sourceProfile,
-        referenceStats || sourceProfile,
-      );
-      const rendered = await engineWorker.run(
-        "render-export",
-        {
-          data: imageData.data,
-          width: source.width,
-          height: source.height,
-          styleLuts,
-          semanticMasks,
-          source: sourceProfile,
-          reference: referenceStats || sourceProfile,
-          settings,
-          output: {
-            format: exportOptions.format,
-            mime,
-            extension,
-            quality: exportOptions.quality / 100,
-          },
-        },
-        {
-          photoId: `export-render:${active.id}`,
-          transfer: [imageData.data.buffer],
-          onProgress: (progress) =>
-            setBusyTask({
-              kind: "export",
-              label: active.name,
-              stage: progress.label,
-              progress: progress.percent,
-            }),
-        },
-      );
-
-      if (rendered.blob) {
-        saveBlob(rendered.blob, `${filename}.${rendered.extension}`);
-      } else if (rendered.buffer) {
-        saveBlob(new Blob([rendered.buffer], { type: rendered.mime }), `${filename}.${rendered.extension}`);
-      } else {
-        const outputCanvas = document.createElement("canvas");
-        outputCanvas.width = rendered.width;
-        outputCanvas.height = rendered.height;
-        outputCanvas.getContext("2d").putImageData(
-          new ImageData(rendered.data, rendered.width, rendered.height),
-          0,
-          0,
-        );
-        const blob = await new Promise((resolve) =>
-          outputCanvas.toBlob(resolve, mime, exportOptions.quality / 100),
-        );
-        saveBlob(blob, `${filename}.${extension}`);
       }
       setExportDialogOpen(false);
-      setExported(true);
+      setExported(
+        exportTargets.length > 1
+          ? `已导出 ${exportTargets.length} 张照片`
+          : "已导出当前照片",
+      );
       window.setTimeout(() => setExported(false), 4000);
     } catch (error) {
       if (error?.name !== "AbortError") {
@@ -1983,9 +2170,9 @@ export function App({ onLogout, session, username = "本机用户" }) {
         setProcessing(false);
       }
     }
-    saveBlob(
+    await deliverExport(
       new Blob([content], { type: type === "xmp" ? "application/rdf+xml" : "text/plain" }),
-      `${name}.${type}`,
+      `${safeFileStem(name)}.${type}`,
     );
   }
 
@@ -2040,6 +2227,10 @@ export function App({ onLogout, session, username = "本机用户" }) {
       const complete = next.map((item, index) => ({ ...item, stats: stats[index] }));
       setTargets((items) => [...items, ...complete].slice(0, 20));
       setActiveId((value) => value || complete[0].id);
+      setSelectedTargetIds((items) => [
+        ...new Set([...items, ...complete.map((item) => item.id)]),
+      ]);
+      selectionAnchor.current = complete.at(-1)?.id || selectionAnchor.current;
       void syncDecodedFiles(decoded, "target");
     } finally {
       setAnalyzing(false);
@@ -2080,6 +2271,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
       setReferenceStats(averageProfiles(refStats));
       setTargets(demoTargets);
       setActiveId(demoTargets[0].id);
+      setSelectedTargetIds(demoTargets.map((item) => item.id));
+      selectionAnchor.current = demoTargets[0].id;
     } finally {
       setAnalyzing(false);
       setBusyTask(null);
@@ -2091,6 +2284,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
     if (removed?.url.startsWith("blob:")) URL.revokeObjectURL(removed.url);
     const next = references.filter((item) => item.id !== id);
     setReferences(next);
+    if (referencePreview?.id === id) setReferencePreview(null);
     if (!next.length) setReferenceStats(null);
     else {
       setReferenceStats(averageProfiles(next.map((item) => item.stats).filter(Boolean)));
@@ -2102,7 +2296,54 @@ export function App({ onLogout, session, username = "本机用户" }) {
     if (removed?.url.startsWith("blob:")) URL.revokeObjectURL(removed.url);
     const next = targets.filter((item) => item.id !== id);
     setTargets(next);
+    setSelectedTargetIds((items) => items.filter((item) => item !== id));
     if (activeId === id) setActiveId(next[0]?.id || null);
+  }
+
+  function toggleTargetSelection(id, event = {}) {
+    setActiveId(id);
+    setSelectedTargetIds((current) => {
+      if (event.shiftKey && selectionAnchor.current) {
+        const start = targets.findIndex((item) => item.id === selectionAnchor.current);
+        const end = targets.findIndex((item) => item.id === id);
+        if (start >= 0 && end >= 0) {
+          const [first, last] = start < end ? [start, end] : [end, start];
+          return [...new Set([...current, ...targets.slice(first, last + 1).map((item) => item.id)])];
+        }
+      }
+      const selected = current.includes(id);
+      if ((event.metaKey || event.ctrlKey) && selected) {
+        return current.filter((item) => item !== id);
+      }
+      if (selected) return current.filter((item) => item !== id);
+      return [...current, id];
+    });
+    selectionAnchor.current = id;
+  }
+
+  function selectAllTargets() {
+    setSelectedTargetIds(targets.map((item) => item.id));
+    selectionAnchor.current = targets.at(-1)?.id || null;
+  }
+
+  async function handleImportDrop(event, kind) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepth.current = 0;
+    setDragImportActive(false);
+    const files = droppedFiles(event.dataTransfer);
+    if (!files.length) {
+      setImportErrors([
+        "微信没有向浏览器提供可读取文件。请尝试拖动原图消息，或先另存到本机后再导入。",
+      ]);
+      return;
+    }
+    if (analyzing || isExporting) {
+      setImportErrors(["请等待当前分析或导出任务完成后再导入照片。"]);
+      return;
+    }
+    if (kind === "reference") await addReferences(files);
+    else await addTargets(files);
   }
 
   function applyPreset(key) {
@@ -2342,7 +2583,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   return (
     <main className="app-shell editor-shell">
       <header className="topbar">
-        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 4</small></div>
+        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 4.2</small></div>
         <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
         <div className="header-actions">
           <GlassButton
@@ -2371,17 +2612,57 @@ export function App({ onLogout, session, username = "本机用户" }) {
           <button
             className="primary-button"
             disabled={!active || isExporting}
+            aria-label={selectedTargets.length > 1 ? `导出已选 ${selectedTargets.length} 张照片` : "导出图片与预设"}
+            title={selectedTargets.length > 1 ? `导出已选 ${selectedTargets.length} 张照片` : "导出图片与预设"}
             onClick={() => {
               setExportOptions((value) => ({
                 ...value,
-                name: active.name.replace(/\.[^.]+$/, ""),
+                name: selectedTargets.length > 1
+                  ? "ColorLab-batch"
+                  : active.name.replace(/\.[^.]+$/, ""),
               }));
               setExportDialogOpen(true);
             }}
-          ><DownloadSimple size={17} weight="bold" />导出图片与预设</button>
+          >
+            <DownloadSimple size={17} weight="bold" />
+            <span>{selectedTargets.length > 1 ? `导出已选 ${selectedTargets.length} 张` : "导出图片与预设"}</span>
+          </button>
         </div>
       </header>
-      {exported && <div className="toast glass-surface" role="status"><Check size={16} weight="bold" />已导出当前照片</div>}
+      {exported && <div className="toast glass-surface" role="status"><Check size={16} weight="bold" />{exported}</div>}
+
+      {dragImportActive && (
+        <div className="drag-import-overlay" role="dialog" aria-label="拖放导入照片">
+          <div className="drag-import-header">
+            <Images size={24} />
+            <div>
+              <strong>松开鼠标即可导入</strong>
+              <span>支持从微信聊天、资源管理器或桌面拖入浏览器可读取的图片</span>
+            </div>
+          </div>
+          <div className="drag-import-zones">
+            <div
+              className="drag-import-zone reference"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => handleImportDrop(event, "reference")}
+            >
+              <Sparkle size={28} />
+              <strong>作为参考样片</strong>
+              <span>加入左侧风格分析，最多 8 张</span>
+            </div>
+            <div
+              className="drag-import-zone target"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => handleImportDrop(event, "target")}
+            >
+              <ImageSquare size={28} />
+              <strong>作为待调色照片</strong>
+              <span>加入批量队列，最多 20 张</span>
+            </div>
+          </div>
+          <small>若微信没有提供文件数据，页面会提示先将原图另存到本机。</small>
+        </div>
+      )}
 
       {busyTask && (
         <div className="global-progress" role="status" aria-live="polite">
@@ -2428,14 +2709,34 @@ export function App({ onLogout, session, username = "本机用户" }) {
           <input ref={referenceInput} hidden multiple type="file" accept={IMAGE_ACCEPT} onChange={(event) => addReferences(event.target.files)} />
           <div className="reference-list">
             {references.map((item) => (
-              <figure key={item.id} className="reference-thumb">
+              <figure
+                key={item.id}
+                className="reference-thumb"
+                role="button"
+                tabIndex={0}
+                aria-label={`查看参考样片 ${item.name}`}
+                onClick={() => setReferencePreview(item)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setReferencePreview(item);
+                  }
+                }}
+              >
                 <img src={item.url} alt={item.name} />
+                <span className="reference-view-cue"><Maximize2 size={13} />查看</span>
                 {item.raw && (
                   <span className={`raw-badge ${item.metadata?.preview === "embedded" ? "fallback" : ""}`}>
                     {item.metadata?.preview === "embedded" ? "RAW 预览" : "16-bit"}
                   </span>
                 )}
-                <button title="移除参考图" onClick={() => removeReference(item.id)}><X size={12} weight="bold" /></button>
+                <button
+                  title="移除参考图"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    removeReference(item.id);
+                  }}
+                ><X size={12} weight="bold" /></button>
               </figure>
             ))}
           </div>
@@ -2542,24 +2843,52 @@ export function App({ onLogout, session, username = "本机用户" }) {
           </div>
 
           <section className="target-strip glass-surface">
-            <div className="target-strip-title"><span>待调色照片</span><b>{targets.length}</b></div>
+            <div className="target-strip-title">
+              <span>待调色照片</span>
+              <b>{selectedTargetIds.length ? `已选 ${selectedTargetIds.length} / ${targets.length}` : `${targets.length} 张`}</b>
+              {!!targets.length && (
+                <div className="target-selection-actions">
+                  <button type="button" onClick={selectAllTargets}>全选</button>
+                  <button type="button" disabled={!selectedTargetIds.length} onClick={() => setSelectedTargetIds([])}>清除</button>
+                </div>
+              )}
+            </div>
             <div className="target-scroller">
               <button className="add-target" onClick={() => targetInput.current?.click()}><Plus size={24} /><span>添加照片</span></button>
               <input ref={targetInput} hidden multiple type="file" accept={IMAGE_ACCEPT} onChange={(event) => addTargets(event.target.files)} />
               {targets.map((item) => (
                 <figure
                   key={item.id}
-                  className={`target-thumb ${item.id === active?.id ? "active" : ""}`}
+                  className={[
+                    "target-thumb",
+                    item.id === active?.id ? "active" : "",
+                    selectedTargetIds.includes(item.id) ? "selected" : "",
+                  ].filter(Boolean).join(" ")}
                   onClick={() => setActiveId(item.id)}
                 >
                   <img src={item.url} alt={item.name} />
+                  <button
+                    type="button"
+                    className="target-select"
+                    aria-label={`${selectedTargetIds.includes(item.id) ? "取消选择" : "选择"} ${item.name}`}
+                    aria-pressed={selectedTargetIds.includes(item.id)}
+                    title={selectedTargetIds.includes(item.id) ? "取消批量导出" : "加入批量导出"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleTargetSelection(item.id, event);
+                    }}
+                  >
+                    {selectedTargetIds.includes(item.id)
+                      ? <Check size={13} weight="bold" />
+                      : <Square size={13} />}
+                  </button>
                   {item.raw && (
                     <span className={`raw-badge ${item.metadata?.preview === "embedded" ? "fallback" : ""}`}>
                       {item.metadata?.preview === "embedded" ? "RAW 预览" : "16-bit"}
                     </span>
                   )}
                   {item.id === active?.id && <figcaption>正在编辑</figcaption>}
-                  <button title="移除照片" onClick={(event) => { event.stopPropagation(); removeTarget(item.id); }}><X size={12} weight="bold" /></button>
+                  <button className="remove-target" title="移除照片" onClick={(event) => { event.stopPropagation(); removeTarget(item.id); }}><X size={12} weight="bold" /></button>
                 </figure>
               ))}
             </div>
@@ -2807,6 +3136,37 @@ export function App({ onLogout, session, username = "本机用户" }) {
           </section>
         </div>
       )}
+      {referencePreview && (
+        <div className="modal-backdrop reference-preview-backdrop" onMouseDown={() => setReferencePreview(null)}>
+          <section
+            className="reference-preview-modal glass-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`参考样片预览：${referencePreview.name}`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-title">
+              <div><Sparkle size={18} /><h2>参考样片</h2></div>
+              <GlassButton className="mini-button" onClick={() => setReferencePreview(null)}><X size={14} /></GlassButton>
+            </div>
+            <figure className="reference-preview-stage">
+              <img src={referencePreview.url} alt={referencePreview.name} />
+            </figure>
+            <div className="reference-preview-meta">
+              <div>
+                <strong>{referencePreview.name}</strong>
+                <span>
+                  {referencePreview.metadata?.width && referencePreview.metadata?.height
+                    ? `${referencePreview.metadata.width} × ${referencePreview.metadata.height}`
+                    : "工作预览"}
+                  {referencePreview.raw ? ` · ${referencePreview.metadata?.bitDepth || 16}-bit RAW` : ""}
+                </span>
+              </div>
+              <small>点击遮罩或按 Esc 返回工作台</small>
+            </div>
+          </section>
+        </div>
+      )}
       {exportDialogOpen && active && (
         <div className="modal-backdrop" onMouseDown={() => {
           if (!isExporting) setExportDialogOpen(false);
@@ -2815,11 +3175,38 @@ export function App({ onLogout, session, username = "本机用户" }) {
             <div className="modal-title"><div><DownloadSimple size={18} /><h2>导出图片与专业预设</h2></div><GlassButton className="mini-button" disabled={isExporting} onClick={() => setExportDialogOpen(false)}><X size={14} /></GlassButton></div>
             <div className="export-image-panel">
               <div className="export-block-heading">
-                <div><strong>成片导出</strong><span>原始尺寸 · 4K · 2K · 1080p</span></div>
-                <small>JPEG / PNG / WebP / BMP</small>
+                <div>
+                  <strong>{selectedTargets.length > 1 ? `批量成片 · ${selectedTargets.length} 张` : "成片导出"}</strong>
+                  <span>原始尺寸 · 4K · 2K · 1080p</span>
+                </div>
+                <small>{selectedTargets.length > 1 && !exportDirectory ? "自动打包 ZIP · " : ""}JPEG / PNG / WebP / BMP</small>
               </div>
               <div className="export-grid">
-                <label className="field-label full">文件名称<input value={exportOptions.name} onChange={(event) => setExportOptions({ ...exportOptions, name: event.target.value })} /></label>
+                <label className="field-label full">
+                  {selectedTargets.length > 1 ? "批次名称" : "文件名称"}
+                  <input value={exportOptions.name} onChange={(event) => setExportOptions({ ...exportOptions, name: event.target.value })} />
+                </label>
+                <div className="export-destination full">
+                  <div>
+                    <span>导出位置</span>
+                    <strong>{exportDirectory ? exportDirectory.name : "浏览器默认下载位置"}</strong>
+                    <small>
+                      {exportDirectory
+                        ? `成片与预设会直接写入“${exportDirectory.name}”`
+                        : typeof window.showDirectoryPicker === "function"
+                          ? "可选择文件夹；未选择时，多图会合并为一个 ZIP"
+                          : "当前浏览器不支持目录写入，多图会合并为一个 ZIP"}
+                    </small>
+                  </div>
+                  <div>
+                    {exportDirectory && (
+                      <button type="button" className="destination-clear" onClick={() => setExportDirectory(null)}>恢复默认</button>
+                    )}
+                    <GlassButton type="button" onClick={chooseExportDirectory}>
+                      <FolderOpen size={15} />选择位置
+                    </GlassButton>
+                  </div>
+                </div>
                 <label className="field-label">像素大小<select value={exportOptions.resolution} onChange={(event) => setExportOptions({ ...exportOptions, resolution: event.target.value })}><option value="original">原始完整尺寸</option><option value="4k">4K · 最长边 3840</option><option value="2k">2K · 最长边 2560</option><option value="1080p">1080p · 最长边 1920</option></select></label>
                 <label className="field-label">图片格式<select value={exportOptions.format} onChange={(event) => setExportOptions({ ...exportOptions, format: event.target.value })}><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option><option value="bmp">BMP</option></select></label>
                 <label className="field-label full">质量 <span>{exportOptions.quality}%</span><input type="range" min="50" max="100" value={exportOptions.quality} disabled={!["jpeg", "webp"].includes(exportOptions.format)} onChange={(event) => setExportOptions({ ...exportOptions, quality: Number(event.target.value) })} /></label>
@@ -2829,7 +3216,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               <div>
                 <span className="preset-export-badge">DIRECT PRESET EXPORT</span>
                 <strong>带走这套颜色，在专业软件继续编辑</strong>
-                <p>XMP 可用于 Lightroom / Camera Raw；33³ CUBE LUT 可用于 Photoshop、DaVinci Resolve 等支持 LUT 的软件；CLSTYLE 保留完整 V4.1 语义风格。</p>
+                <p>XMP 可用于 Lightroom / Camera Raw；33³ CUBE LUT 可用于 Photoshop、DaVinci Resolve 等支持 LUT 的软件；CLSTYLE 保留完整 V4.2 语义风格。</p>
                 <small>标准 CUBE 无法包含语义局部调整、质感和随机颗粒。</small>
               </div>
               <div>
@@ -2838,7 +3225,16 @@ export function App({ onLogout, session, username = "本机用户" }) {
                 <GlassButton onClick={exportClstyle}>完整 CLSTYLE</GlassButton>
               </div>
             </div>
-            <div className="dialog-actions"><GlassButton disabled={isExporting} onClick={() => setExportDialogOpen(false)}>取消</GlassButton><button className="primary-button" disabled={isExporting} onClick={exportImage}>{isExporting ? "正在导出…" : "导出图片"}</button></div>
+            <div className="dialog-actions">
+              <GlassButton disabled={isExporting} onClick={() => setExportDialogOpen(false)}>取消</GlassButton>
+              <button className="primary-button" disabled={isExporting} onClick={exportImage}>
+                {isExporting
+                  ? `正在导出 ${selectedTargets.length} 张…`
+                  : selectedTargets.length > 1
+                    ? `导出已选 ${selectedTargets.length} 张`
+                    : "导出图片"}
+              </button>
+            </div>
           </section>
         </div>
       )}

@@ -38,8 +38,66 @@ function protectToneRange(red, green, blue, mapped) {
     * (1 - highlightWeight * 0.68)
     * (1 - shadowWeight * 0.1);
   const collapseRisk = smoothstep(0.075, 0.19, Math.abs(mappedLight - inputLight));
-  maximumLift = maximumLift * (1 - collapseRisk * 0.58);
-  maximumDrop = maximumDrop * (1 - collapseRisk * 0.7);
+  maximumLift *= 1 - collapseRisk * 0.58;
+  maximumDrop *= 1 - collapseRisk * 0.7;
+  const limitedShift = Math.max(
+    -maximumDrop,
+    Math.min(maximumLift, mappedLight - inputLight),
+  );
+  const correction = inputLight + limitedShift - mappedLight;
+  const protectedColor = [
+    clampUnit(mapped[0] + correction),
+    clampUnit(mapped[1] + correction),
+    clampUnit(mapped[2] + correction),
+  ];
+  const inputChroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+  const protectedLight = luminance(...protectedColor);
+  const protectedChroma = Math.max(...protectedColor) - Math.min(...protectedColor);
+  const chromaHighlightWeight = smoothstep(0.52, 0.9, inputLight);
+  const minimumChroma = inputChroma * (0.34 + chromaHighlightWeight * 0.24);
+  if (
+    chromaHighlightWeight <= 0.02
+    || inputChroma <= 0.012
+    || protectedChroma >= minimumChroma
+  ) return protectedColor;
+
+  const hueScale = minimumChroma / inputChroma;
+  const huePreserved = [
+    clampUnit(protectedLight + (red - inputLight) * hueScale),
+    clampUnit(protectedLight + (green - inputLight) * hueScale),
+    clampUnit(protectedLight + (blue - inputLight) * hueScale),
+  ];
+  const blend = chromaHighlightWeight
+    * clampUnit((minimumChroma - protectedChroma) / Math.max(0.001, minimumChroma))
+    * 0.86;
+  return protectedColor.map((value, channel) =>
+    clampUnit(value + (huePreserved[channel] - value) * blend));
+}
+
+function protectToneRangeAdaptive(red, green, blue, mapped, toneGuard) {
+  const inputLight = luminance(red, green, blue);
+  const mappedLight = luminance(mapped[0], mapped[1], mapped[2]);
+  const midtoneWeight = Math.max(0, 1 - Math.abs(inputLight - 0.5) * 2);
+  const highlightWeight = smoothstep(0.88, 0.99, inputLight);
+  const shadowWeight = 1 - smoothstep(0.018, 0.15, inputLight);
+  const toeLift = toneGuard.toeLift;
+  const shoulderDrop = toneGuard.shoulderDrop;
+  const rangeCompression = toneGuard.rangeCompression;
+  let maximumLift = (0.065 + midtoneWeight * 0.095)
+    * (1 - highlightWeight * 0.72)
+    * (1 - shadowWeight * 0.08)
+    + toeLift * (0.74 + shadowWeight * 0.2)
+    + rangeCompression * shadowWeight * 0.045;
+  let maximumDrop = (0.058 + midtoneWeight * 0.09
+    + shoulderDrop * 0.78
+    + rangeCompression * highlightWeight * 0.055)
+    * (1 - highlightWeight * 0.24)
+    * (1 - shadowWeight * 0.1);
+  const collapseRisk = smoothstep(0.075, 0.19, Math.abs(mappedLight - inputLight));
+  const supportedLift = clampUnit(toeLift / 0.12 + rangeCompression * 0.45);
+  const supportedDrop = clampUnit(shoulderDrop / 0.12 + rangeCompression * 0.45);
+  maximumLift *= 1 - collapseRisk * (0.58 - supportedLift * 0.38);
+  maximumDrop *= 1 - collapseRisk * (0.7 - supportedDrop * 0.5);
   const limitedShift = Math.max(
     -maximumDrop,
     Math.min(maximumLift, mappedLight - inputLight),
@@ -252,12 +310,28 @@ function maskValue(semanticMasks, region, pixel, width, height) {
   return mask[sourceY * semanticMasks.width + sourceX] || 0;
 }
 
+function sampleToneCorrection(correction, inputLight) {
+  if (!correction?.length) return 0;
+  const position = clampUnit(inputLight) * (correction.length - 1);
+  const lower = Math.floor(position);
+  const upper = Math.min(correction.length - 1, lower + 1);
+  const amount = position - lower;
+  return correction[lower] + (correction[upper] - correction[lower]) * amount;
+}
+
 export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = null) {
   const residualEntries = Object.entries(styleLuts.residuals || {});
   const mapped = [0, 0, 0];
   const delta = [0, 0, 0];
   const residual = [0, 0, 0];
   const hasResiduals = residualEntries.length > 0;
+  const toneCorrectionLut = styleLuts.toneCorrection;
+  const hasToneCorrection = Boolean(toneCorrectionLut?.length);
+  const toneGuard = styleLuts.toneGuard;
+  const hasToneGuard = Boolean(
+    toneGuard
+    && (toneGuard.toeLift || toneGuard.shoulderDrop || toneGuard.rangeCompression),
+  );
   for (let pixel = 0; pixel < width * height; pixel += 1) {
     const index = pixel * 4;
     if (data[index + 3] < 16) continue;
@@ -265,8 +339,19 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
     const green = data[index + 1] / 255;
     const blue = data[index + 2] / 255;
     tetrahedralSampleInto(styleLuts.global, red, green, blue, mapped);
+    if (hasToneCorrection) {
+      const toneCorrection = sampleToneCorrection(
+        toneCorrectionLut,
+        luminance(red, green, blue),
+      );
+      mapped[0] = clampUnit(mapped[0] + toneCorrection);
+      mapped[1] = clampUnit(mapped[1] + toneCorrection);
+      mapped[2] = clampUnit(mapped[2] + toneCorrection);
+    }
     if (!hasResiduals) {
-      const protectedColor = protectToneRange(red, green, blue, mapped);
+      const protectedColor = hasToneGuard
+        ? protectToneRangeAdaptive(red, green, blue, mapped, toneGuard)
+        : protectToneRange(red, green, blue, mapped);
       data[index] = protectedColor[0] * 255;
       data[index + 1] = protectedColor[1] * 255;
       data[index + 2] = protectedColor[2] * 255;
@@ -289,11 +374,14 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
       totalWeight += weight;
     }
     const normalization = totalWeight > 1 ? 1 / totalWeight : 1;
-    const protectedColor = protectToneRange(red, green, blue, [
+    const mappedWithResidual = [
       mapped[0] + residual[0] * normalization,
       mapped[1] + residual[1] * normalization,
       mapped[2] + residual[2] * normalization,
-    ]);
+    ];
+    const protectedColor = hasToneGuard
+      ? protectToneRangeAdaptive(red, green, blue, mappedWithResidual, toneGuard)
+      : protectToneRange(red, green, blue, mappedWithResidual);
     data[index] = protectedColor[0] * 255;
     data[index + 1] = protectedColor[1] * 255;
     data[index + 2] = protectedColor[2] * 255;

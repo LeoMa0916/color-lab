@@ -146,7 +146,7 @@ export function applyTextureMatch(
   const gains = referenceTexture.spectrum.map((value, index) =>
     clamp(
       (value / Math.max(0.0005, sourceTexture.spectrum[index]) - 1) * amount,
-      -0.42,
+      -0.68,
       0.32,
     ));
   const noiseDelta = [0, 1, 2].map((tone) =>

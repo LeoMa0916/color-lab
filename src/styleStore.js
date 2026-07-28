@@ -51,7 +51,7 @@ export function serializeClstyle(style) {
   const envelope = {
     format: "com.colorlab.clstyle",
     schemaVersion: 4,
-    engine: "Color Engine 4",
+    engine: "Color Engine 4.2",
     exportedAt: new Date().toISOString(),
     style,
   };

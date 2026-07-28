@@ -6,6 +6,7 @@ import {
   lutToRgbaInput,
   residualLut,
   smoothLut,
+  tetrahedralSample,
 } from "./lut3d.js";
 
 const REGIONAL_LUTS = ["skin", "sky", "foliage", "neutral"];
@@ -21,6 +22,66 @@ function rounded(values, digits = 5) {
   const scale = 10 ** digits;
   return Array.from(values || [], (value) =>
     Math.round((Number(value) || 0) * scale) / scale);
+}
+
+function buildToneGuard(source, reference) {
+  const sourceTone = source?.tone?.quantiles;
+  const referenceTone = reference?.tone?.quantiles;
+  if (!sourceTone || !referenceTone) {
+    return { toeLift: 0, shoulderDrop: 0, rangeCompression: 0 };
+  }
+  const sourceRange = Math.max(12, (sourceTone[9] ?? 255) - (sourceTone[1] ?? 0));
+  const referenceRange = Math.max(12, (referenceTone[9] ?? 255) - (referenceTone[1] ?? 0));
+  return {
+    toeLift: Math.max(0, Math.min(0.22, ((referenceTone[1] ?? 0) - (sourceTone[1] ?? 0)) / 255)),
+    shoulderDrop: Math.max(0, Math.min(0.22, ((sourceTone[9] ?? 255) - (referenceTone[9] ?? 255)) / 255)),
+    rangeCompression: Math.max(0, Math.min(0.7, (sourceRange - referenceRange) / sourceRange)),
+  };
+}
+
+function buildToneCorrection(globalLut, source, reference, settings) {
+  const data = new Uint8ClampedArray(256 * 4);
+  for (let value = 0; value < 256; value += 1) {
+    const index = value * 4;
+    data[index] = value;
+    data[index + 1] = value;
+    data[index + 2] = value;
+    data[index + 3] = 255;
+  }
+  applyStyleProfile(
+    data,
+    source,
+    reference,
+    {
+      strength: settings.strength,
+      referenceLighting: settings.referenceLighting,
+      temperature: 0,
+      contrast: 0,
+      saturation: 0,
+      grain: 0,
+    },
+    [IDENTITY, IDENTITY, IDENTITY, IDENTITY],
+    {
+      width: 256,
+      height: 1,
+      samplePosition: [0.5, 0.5],
+      skipTexture: true,
+    },
+  );
+  return Float32Array.from({ length: 256 }, (_, value) => {
+    const index = value * 4;
+    const desired = (
+      data[index] * 0.2126
+      + data[index + 1] * 0.7152
+      + data[index + 2] * 0.0722
+    ) / 255;
+    const sampled = tetrahedralSample(
+      globalLut,
+      [value / 255, value / 255, value / 255],
+    );
+    const rendered = sampled[0] * 0.2126 + sampled[1] * 0.7152 + sampled[2] * 0.0722;
+    return Math.max(-0.18, Math.min(0.18, desired - rendered));
+  });
 }
 
 function compactProfile(profile) {
@@ -114,7 +175,13 @@ function renderLut(source, reference, settings, size, region, includeAdjustments
     });
     applyCurveLuts(data, settings.curves || IDENTITY_CURVES);
   }
-  return smoothLut(createLutFromRgba(data, size), region ? 0.05 : 0.04, 1);
+  // A 33³ global LUT already has enough samples to preserve a smooth tone
+  // curve. Heavy neighbourhood smoothing noticeably flattens the shoulder and
+  // toe that the analysis just recovered, especially for low-latitude
+  // references. Keep a lighter pass for numerical continuity, while residual
+  // region LUTs retain a little more smoothing because their 17³ grid is
+  // blended through soft masks.
+  return smoothLut(createLutFromRgba(data, size), region ? 0.04 : 0.018, 1);
 }
 
 export function buildStyleLuts(
@@ -144,6 +211,8 @@ export function buildStyleLuts(
     version: 4,
     global,
     residuals,
+    toneGuard: buildToneGuard(source, reference),
+    toneCorrection: buildToneCorrection(global, source, reference, settings),
     localRegions: Object.keys(residuals),
     includesAdjustments: includeAdjustments,
     limitations: {
