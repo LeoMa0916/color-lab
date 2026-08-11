@@ -277,6 +277,33 @@ try {
   await evaluate(cdp, "document.querySelector('.reference-preview-modal .mini-button').click()");
   await waitFor(cdp, "!document.querySelector('.reference-preview-modal')");
 
+  await evaluate(cdp, "document.querySelector('.stage-expand-button').click()");
+  await waitFor(cdp, "document.querySelector('.stage-preview-modal')");
+  const stagePreview = await evaluate(cdp, `(() => {
+    const modal = document.querySelector('.stage-preview-modal');
+    const stage = document.querySelector('.stage-preview-stage');
+    return {
+      modalVisible: modal.getBoundingClientRect().height > 400,
+      stageVisible: stage.getBoundingClientRect().height > 300,
+      withinViewport: modal.getBoundingClientRect().top >= 0
+        && modal.getBoundingClientRect().bottom <= innerHeight,
+      canvases: stage.querySelectorAll('canvas').length,
+    };
+  })()`);
+  assert(stagePreview.modalVisible && stagePreview.stageVisible, "Stage detail preview is not visible");
+  assert(stagePreview.withinViewport, "Stage detail preview exceeds the desktop viewport");
+  assert(stagePreview.canvases === 2, "Stage detail preview is missing before/after canvases");
+  const detailDesktopShot = await cdp.send("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+  });
+  writeFileSync(
+    join(project, "qa-private", "stage-detail-desktop.png"),
+    Buffer.from(detailDesktopShot.data, "base64"),
+  );
+  await evaluate(cdp, "document.querySelector('.stage-preview-modal .mini-button').click()");
+  await waitFor(cdp, "!document.querySelector('.stage-preview-modal')");
+
   await evaluate(cdp, "document.querySelector('.header-actions > .primary-button').click()");
   await waitFor(cdp, "document.querySelector('.export-destination')");
   const exportDialog = await evaluate(cdp, `(() => ({
@@ -350,6 +377,18 @@ try {
   const basicChecksum = await evaluate(cdp, checksumExpression);
   assert(initialChecksum !== basicChecksum, "Basic adjustment did not change the preview");
 
+  await evaluate(cdp, `(() => {
+    const label = document.querySelector('[data-range-label="曝光度"] .range-label');
+    label.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  })()`);
+  await waitFor(
+    cdp,
+    "document.querySelector('[data-range-label=\"曝光度\"] input[type=\"range\"]')?.value === '0'",
+  );
+  await delay(1200);
+  const resetChecksum = await evaluate(cdp, checksumExpression);
+  assert(resetChecksum === initialChecksum, "Double-clicking a Basic label did not reset its parameter");
+
   await evaluate(cdp, "document.querySelector('.curve-section .inspector-disclosure-toggle').click()");
   await waitFor(cdp, "document.querySelector('.curve-canvas')");
   await evaluate(cdp, "document.querySelector('.curve-canvas').scrollIntoView({ block: 'center' })");
@@ -395,6 +434,14 @@ try {
   });
   await cdp.send("Page.reload", { ignoreCache: true });
   await waitFor(cdp, "document.readyState === 'complete' && document.querySelector('.workspace')");
+  if (!await evaluate(cdp, "Boolean(document.querySelector('.stage-expand-button'))")) {
+    await evaluate(cdp, "document.querySelector('.demo-button').click()");
+    await waitFor(
+      cdp,
+      "document.querySelector('.stage-expand-button') && document.querySelector('canvas.styled')?.width > 0",
+    );
+    await delay(900);
+  }
   const mobile = await evaluate(cdp, `({
     width: window.innerWidth,
     scrollWidth: document.documentElement.scrollWidth
@@ -409,6 +456,30 @@ try {
     join(project, "qa-private", "batch-workflow-mobile.png"),
     Buffer.from(mobileShot.data, "base64"),
   );
+
+  await evaluate(cdp, "document.querySelector('.stage-expand-button').click()");
+  await waitFor(cdp, "document.querySelector('.stage-preview-modal')");
+  const mobileDetail = await evaluate(cdp, `(() => {
+    const modal = document.querySelector('.stage-preview-modal');
+    return {
+      right: modal.getBoundingClientRect().right,
+      bottom: modal.getBoundingClientRect().bottom,
+      width: innerWidth,
+      height: innerHeight,
+    };
+  })()`);
+  assert(mobileDetail.right <= mobileDetail.width, "Mobile detail preview overflows horizontally");
+  assert(mobileDetail.bottom <= mobileDetail.height, "Mobile detail preview overflows vertically");
+  const detailMobileShot = await cdp.send("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+  });
+  writeFileSync(
+    join(project, "qa-private", "stage-detail-mobile.png"),
+    Buffer.from(detailMobileShot.data, "base64"),
+  );
+  await evaluate(cdp, "document.querySelector('.stage-preview-modal .mini-button').click()");
+  await waitFor(cdp, "!document.querySelector('.stage-preview-modal')");
 
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 844,
@@ -455,7 +526,7 @@ try {
   );
 
   console.log("Browser end-to-end verification passed", {
-    checksums: [initialChecksum, basicChecksum, curveChecksum],
+    checksums: [initialChecksum, basicChecksum, resetChecksum, curveChecksum],
     mobile,
     landscape,
     reducedMotion,

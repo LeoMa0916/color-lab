@@ -792,6 +792,9 @@ function buildVersion3Lookups(source, reference) {
   const hueShift = new Float32Array(toneBins * hueBins);
   const logChroma = new Float32Array(toneBins * hueBins);
   const lightnessShift = new Float32Array(toneBins * hueBins);
+  const gridEvidence = new Float32Array(toneBins * hueBins);
+  const abHueShift = new Float32Array(hueBins);
+  const abLogChroma = new Float32Array(hueBins);
 
   const neutralDeltas = source.neutralZones.map((zone, index) => {
     const target = reference.neutralZones[index];
@@ -816,9 +819,8 @@ function buildVersion3Lookups(source, reference) {
       const evidence = Math.min(cell.coverage, target.coverage);
       return {
         hue: Math.max(-24, Math.min(24, circularDelta(target.hue, cell.hue))),
-        // Treat global colorfulness as a base layer and keep the 21-cell grid
-        // as a residual. This mirrors HSL/Point Color style workflows and
-        // avoids applying the same saturation change twice.
+        // Global colorfulness remains a base layer. The hue/saturation plane
+        // is then handled separately from the tone-dependent color residual.
         chroma: Math.max(
           0.72,
           Math.min(
@@ -863,7 +865,35 @@ function buildVersion3Lookups(source, reference) {
         hueShift[index] = hueTotal / evidence;
         logChroma[index] = chromaTotal / evidence;
         lightnessShift[index] = lightnessTotal / evidence;
+        gridEvidence[index] = evidence;
       }
+    }
+  }
+  // Keep the A/B color plane independent from brightness, then leave the
+  // remaining per-tone response to the C/L plane. This mirrors a professional
+  // LUT workflow: hue and saturation stay smooth across luminance, while a
+  // color's shadow/highlight behavior is still free to differ.
+  for (let hueIndex = 0; hueIndex < hueBins; hueIndex += 1) {
+    let hueTotal = 0;
+    let chromaTotal = 0;
+    let evidence = 0;
+    for (let toneIndex = 0; toneIndex < toneBins; toneIndex += 1) {
+      const index = toneIndex * hueBins + hueIndex;
+      const weight = gridEvidence[index];
+      hueTotal += hueShift[index] * weight;
+      chromaTotal += logChroma[index] * weight;
+      evidence += weight;
+    }
+    if (evidence > 0.0001) {
+      abHueShift[hueIndex] = hueTotal / evidence;
+      abLogChroma[hueIndex] = chromaTotal / evidence;
+    }
+  }
+  for (let toneIndex = 0; toneIndex < toneBins; toneIndex += 1) {
+    for (let hueIndex = 0; hueIndex < hueBins; hueIndex += 1) {
+      const index = toneIndex * hueBins + hueIndex;
+      hueShift[index] -= abHueShift[hueIndex];
+      logChroma[index] -= abLogChroma[hueIndex];
     }
   }
   return {
@@ -876,8 +906,38 @@ function buildVersion3Lookups(source, reference) {
     hueShift,
     logChroma,
     lightnessShift,
+    abHueShift,
+    abLogChroma,
     globalChromaRatio,
   };
+}
+
+function sampleHueLookup(values, hue, hueBins) {
+  const normalizedHue = ((hue % 360) + 360) % 360;
+  const position = normalizedHue / 360 * hueBins;
+  const lower = Math.floor(position) % hueBins;
+  const upper = (lower + 1) % hueBins;
+  const amount = position - Math.floor(position);
+  return values[lower] + (values[upper] - values[lower]) * amount;
+}
+
+function sampleToneHueLookup(values, tone, hue, toneBins, hueBins) {
+  const tonePosition = clampUnit(tone) * (toneBins - 1);
+  const lowerTone = Math.floor(tonePosition);
+  const upperTone = Math.min(toneBins - 1, lowerTone + 1);
+  const toneAmount = tonePosition - lowerTone;
+  const normalizedHue = ((hue % 360) + 360) % 360;
+  const huePosition = normalizedHue / 360 * hueBins;
+  const lowerHue = Math.floor(huePosition) % hueBins;
+  const upperHue = (lowerHue + 1) % hueBins;
+  const hueAmount = huePosition - Math.floor(huePosition);
+  const lowerStart = lowerTone * hueBins;
+  const upperStart = upperTone * hueBins;
+  const lower = values[lowerStart + lowerHue]
+    + (values[lowerStart + upperHue] - values[lowerStart + lowerHue]) * hueAmount;
+  const upper = values[upperStart + lowerHue]
+    + (values[upperStart + upperHue] - values[upperStart + lowerHue]) * hueAmount;
+  return lower + (upper - lower) * toneAmount;
 }
 
 const SEMANTIC_PRIORITY = [
@@ -1158,6 +1218,7 @@ export function applyStyleProfile(
       chroma = Math.hypot(a, b);
       hue = (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
       if (chroma > 0.007) {
+        const lookupHue = hue;
         const colorfulnessWeight = smoothstep(0.006, 0.095, chroma);
         const globalRatio = version3Lookups.globalChromaRatio || 1;
         chroma *= Math.exp(
@@ -1166,14 +1227,28 @@ export function applyStyleProfile(
           * colorfulnessWeight
           * 0.94,
         );
-        const hueIndex = Math.min(
-          version3Lookups.hueBins - 1,
-          Math.round(hue / 360 * version3Lookups.hueBins)
-            % version3Lookups.hueBins,
+        let hueShift = sampleHueLookup(
+          version3Lookups.abHueShift,
+          lookupHue,
+          version3Lookups.hueBins,
+        ) + sampleToneHueLookup(
+          version3Lookups.hueShift,
+          originalLightness,
+          lookupHue,
+          version3Lookups.toneBins,
+          version3Lookups.hueBins,
         );
-        const lookupIndex = toneIndex * version3Lookups.hueBins + hueIndex;
-        let hueShift = version3Lookups.hueShift[lookupIndex];
-        let logChroma = version3Lookups.logChroma[lookupIndex];
+        let logChroma = sampleHueLookup(
+          version3Lookups.abLogChroma,
+          lookupHue,
+          version3Lookups.hueBins,
+        ) + sampleToneHueLookup(
+          version3Lookups.logChroma,
+          originalLightness,
+          lookupHue,
+          version3Lookups.toneBins,
+          version3Lookups.hueBins,
+        );
         const skinLike = hue >= 20
           && hue <= 75
           && originalLightness >= 0.38
@@ -1186,7 +1261,13 @@ export function applyStyleProfile(
         }
         hue += hueShift * strength * 0.88;
         chroma *= Math.exp(logChroma * strength * 0.76);
-        lightness += version3Lookups.lightnessShift[lookupIndex] * strength * 0.34;
+        lightness += sampleToneHueLookup(
+          version3Lookups.lightnessShift,
+          originalLightness,
+          lookupHue,
+          version3Lookups.toneBins,
+          version3Lookups.hueBins,
+        ) * strength * 0.34;
         chroma = Math.min(0.36, chroma);
         a = Math.cos(hue * Math.PI / 180) * chroma;
         b = Math.sin(hue * Math.PI / 180) * chroma;
@@ -1200,15 +1281,6 @@ export function applyStyleProfile(
       );
       if (semantic) {
         const lookup = semantic.lookups;
-        const semanticToneIndex = Math.min(
-          lookup.toneBins - 1,
-          Math.round(originalLightness * (lookup.toneBins - 1)),
-        );
-        const semanticHueIndex = Math.min(
-          lookup.hueBins - 1,
-          Math.round(originalHue / 360 * lookup.hueBins) % lookup.hueBins,
-        );
-        const lookupIndex = semanticToneIndex * lookup.hueBins + semanticHueIndex;
         const factor = semantic.maskWeight * semantic.confidence * strength * 0.64;
         const semanticTone = semantic.toneLut[Math.round(originalLightness * 1023)];
         lightness += (semanticTone - lightness) * factor * 0.34;
@@ -1222,18 +1294,45 @@ export function applyStyleProfile(
         ) * factor;
         chroma = Math.hypot(a, b);
         hue = (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
+        const semanticLookupHue = hue;
         const hueLimit = semantic.id === "skin" ? 10 : 18;
         const hueShift = Math.max(
           -hueLimit,
-          Math.min(hueLimit, lookup.hueShift[lookupIndex]),
+          Math.min(
+            hueLimit,
+            sampleHueLookup(lookup.abHueShift, semanticLookupHue, lookup.hueBins)
+              + sampleToneHueLookup(
+                lookup.hueShift,
+                originalLightness,
+                semanticLookupHue,
+                lookup.toneBins,
+                lookup.hueBins,
+              ),
+          ),
         );
         const logChroma = Math.max(
           Math.log(0.72),
-          Math.min(Math.log(1.38), lookup.logChroma[lookupIndex]),
+          Math.min(
+            Math.log(1.38),
+            sampleHueLookup(lookup.abLogChroma, semanticLookupHue, lookup.hueBins)
+              + sampleToneHueLookup(
+                lookup.logChroma,
+                originalLightness,
+                semanticLookupHue,
+                lookup.toneBins,
+                lookup.hueBins,
+              ),
+          ),
         );
         hue += hueShift * factor;
         chroma *= Math.exp(logChroma * factor);
-        lightness += lookup.lightnessShift[lookupIndex] * factor * 0.16;
+        lightness += sampleToneHueLookup(
+          lookup.lightnessShift,
+          originalLightness,
+          semanticLookupHue,
+          lookup.toneBins,
+          lookup.hueBins,
+        ) * factor * 0.16;
         a = Math.cos(hue * Math.PI / 180) * Math.min(0.36, chroma);
         b = Math.sin(hue * Math.PI / 180) * Math.min(0.36, chroma);
       }

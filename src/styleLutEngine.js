@@ -181,7 +181,7 @@ function renderLut(source, reference, settings, size, region, includeAdjustments
   // references. Keep a lighter pass for numerical continuity, while residual
   // region LUTs retain a little more smoothing because their 17³ grid is
   // blended through soft masks.
-  return smoothLut(createLutFromRgba(data, size), region ? 0.04 : 0.018, 1);
+  return smoothLut(createLutFromRgba(data, size), region ? 0.04 : 0.01, 1);
 }
 
 export function buildStyleLuts(

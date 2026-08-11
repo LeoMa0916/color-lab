@@ -125,6 +125,12 @@ const BASIC_DEFAULTS = {
   dehaze: 0,
   vibrance: 0,
 };
+const BASIC_RESET_VALUES = {
+  ...BASIC_DEFAULTS,
+  temperature: 0,
+  contrast: 0,
+  saturation: 0,
+};
 const PRESETS = {
   faithful: { ...BASIC_DEFAULTS, label: "忠于参考", strength: 82, contrast: 0, saturation: 0, temperature: 0, grain: 0 },
   balanced: { ...BASIC_DEFAULTS, label: "自然平衡", strength: 68, contrast: -4, saturation: -2, temperature: -5, grain: 6 },
@@ -989,6 +995,7 @@ function Range({
   signed = true,
   step = 1,
   decimals = 0,
+  defaultValue = null,
   disabled = false,
 }) {
   const [liveValue, setLiveValue] = useState(value);
@@ -1067,9 +1074,33 @@ function Range({
     if (Number.isFinite(parsed)) commit(parsed);
   }
 
+  function resetToDefault() {
+    if (disabled || !Number.isFinite(defaultValue)) return;
+    commit(defaultValue);
+  }
+
   return (
-    <div className="range-row">
-      <span>{label}</span>
+    <div className="range-row" data-range-label={label}>
+      <button
+        type="button"
+        className="range-label"
+        disabled={disabled || !Number.isFinite(defaultValue)}
+        title={Number.isFinite(defaultValue)
+          ? `双击恢复${label}默认值 ${format(defaultValue)}`
+          : label}
+        aria-label={Number.isFinite(defaultValue)
+          ? `${label}，双击恢复默认值 ${format(defaultValue)}`
+          : label}
+        onDoubleClick={resetToDefault}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            resetToDefault();
+          }
+        }}
+      >
+        {label}
+      </button>
       {editing ? (
         <input
           className="range-number-input"
@@ -1220,6 +1251,7 @@ function BasicAdjustmentsPanel({
                 key={control.key}
                 {...control}
                 value={settings[control.key] ?? 0}
+                defaultValue={BASIC_RESET_VALUES[control.key] ?? 0}
                 disabled={disabled}
                 onInteractionChange={onInteractionChange}
                 onPreview={(value) => onPreview?.({
@@ -1386,7 +1418,7 @@ function StyleAnalysis({ profile }) {
 function styleAnalysisMeta(profile) {
   if (!profile) return "等待样片";
   if (profile.version < 2 || !profile.tone) return "兼容模式";
-  if (profile.semantic) return "语义区域 v4.2";
+  if (profile.semantic) return "语义区域 v4.3";
   return profile.version >= 3 ? "分区感知 v3" : "感知分析 v2";
 }
 
@@ -1397,6 +1429,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const [activeId, setActiveId] = useState(null);
   const [selectedTargetIds, setSelectedTargetIds] = useState([]);
   const [referencePreview, setReferencePreview] = useState(null);
+  const [stagePreviewOpen, setStagePreviewOpen] = useState(false);
+  const [stagePreviewSplit, setStagePreviewSplit] = useState(50);
   const [dragImportActive, setDragImportActive] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [decodeStatus, setDecodeStatus] = useState("");
@@ -1435,6 +1469,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
   });
   const originalCanvas = useRef(null);
   const styledCanvas = useRef(null);
+  const stageOriginalPreviewCanvas = useRef(null);
+  const stageStyledPreviewCanvas = useRef(null);
   const styledBase = useRef(null);
   const styledPreviewBase = useRef(null);
   const curveAdjustedPreviewBase = useRef(null);
@@ -1443,6 +1479,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const semanticMaskCache = useRef(new Map());
   const styleLutCache = useRef(new Map());
   const selectionAnchor = useRef(null);
+  const stagePointer = useRef(null);
   const dragDepth = useRef(0);
   const referenceInput = useRef(null);
   const targetInput = useRef(null);
@@ -1507,13 +1544,27 @@ export function App({ onLogout, session, username = "本机用户" }) {
   }, [analyzing, isExporting, references.length, targets.length]);
 
   useEffect(() => {
-    if (!referencePreview) return undefined;
+    if (!referencePreview && !stagePreviewOpen) return undefined;
     const closeOnEscape = (event) => {
-      if (event.key === "Escape") setReferencePreview(null);
+      if (event.key !== "Escape") return;
+      setReferencePreview(null);
+      setStagePreviewOpen(false);
     };
     document.addEventListener("keydown", closeOnEscape);
     return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [referencePreview]);
+  }, [referencePreview, stagePreviewOpen]);
+
+  useEffect(() => {
+    if (!stagePreviewOpen || !originalCanvas.current || !styledCanvas.current) return;
+    const copyCanvas = (source, target) => {
+      if (!target) return;
+      target.width = source.width;
+      target.height = source.height;
+      target.getContext("2d").drawImage(source, 0, 0);
+    };
+    copyCanvas(originalCanvas.current, stageOriginalPreviewCanvas.current);
+    copyCanvas(styledCanvas.current, stageStyledPreviewCanvas.current);
+  }, [stagePreviewOpen, active?.id, baseRevision]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1777,7 +1828,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
     photoId = active?.id,
   ) {
     const key = JSON.stringify({
-      engine: "4.2-optical-softness",
+      engine: "4.3-ab-cl-grid",
       source: profileFingerprint(source),
       reference: profileFingerprint(reference),
       strength: renderSettings.strength,
@@ -2575,15 +2626,62 @@ export function App({ onLogout, session, username = "本机用户" }) {
   ]);
 
   function updateSplit(event) {
-    if (!dragging && event.type === "pointermove") return;
     const rect = event.currentTarget.getBoundingClientRect();
     setSplit(clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100));
+  }
+
+  function openStagePreview() {
+    if (!active || !originalCanvas.current || !styledCanvas.current) return;
+    setStagePreviewSplit(split);
+    setStagePreviewOpen(true);
+  }
+
+  function beginStageInteraction(event) {
+    if (event.button !== 0) return;
+    stagePointer.current = {
+      x: event.clientX,
+      y: event.clientY,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    setDragging(true);
+  }
+
+  function moveStageInteraction(event) {
+    const interaction = stagePointer.current;
+    if (!interaction) return;
+    if (!interaction.moved) {
+      interaction.moved = Math.hypot(
+        event.clientX - interaction.x,
+        event.clientY - interaction.y,
+      ) > 4;
+    }
+    if (interaction.moved) updateSplit(event);
+  }
+
+  function finishStageInteraction(event) {
+    const interaction = stagePointer.current;
+    stagePointer.current = null;
+    setDragging(false);
+    if (!interaction) return;
+    if (interaction.moved) updateSplit(event);
+    else openStagePreview();
+  }
+
+  function cancelStageInteraction() {
+    stagePointer.current = null;
+    setDragging(false);
+  }
+
+  function updateStagePreviewSplit(event) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setStagePreviewSplit(clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100));
   }
 
   return (
     <main className="app-shell editor-shell">
       <header className="topbar">
-        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 4.2</small></div>
+        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 4.3</small></div>
         <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
         <div className="header-actions">
           <GlassButton
@@ -2789,11 +2887,12 @@ export function App({ onLogout, session, username = "本机用户" }) {
 
         <section className="canvas-column">
           <div
-            className={`photo-stage ${active ? "has-photo" : ""}`}
-            onPointerDown={(event) => { setDragging(true); updateSplit(event); }}
-            onPointerMove={updateSplit}
-            onPointerUp={() => setDragging(false)}
-            onPointerLeave={() => setDragging(false)}
+            className={`photo-stage ${active ? "has-photo" : ""} ${dragging ? "dragging" : ""}`}
+            onPointerDown={beginStageInteraction}
+            onPointerMove={moveStageInteraction}
+            onPointerUp={finishStageInteraction}
+            onPointerCancel={cancelStageInteraction}
+            title={active ? "点击放大查看细节；拖动可调整前后对比" : undefined}
           >
             {active ? (
               <>
@@ -2802,6 +2901,16 @@ export function App({ onLogout, session, username = "本机用户" }) {
                 <div className="split-line" style={{ left: `${split}%` }}><span>‹›</span></div>
                 <span className="image-label styled-label">调色后</span>
                 <span className="image-label original-label">原图</span>
+                <button
+                  type="button"
+                  className="stage-expand-button glass-surface"
+                  aria-label="放大查看当前照片细节"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={openStagePreview}
+                >
+                  <Maximize2 size={14} />
+                  <span>查看细节</span>
+                </button>
                 {active.raw && (
                   <span className={`raw-mode-label glass-surface ${active.metadata?.preview === "embedded" ? "fallback" : ""}`}>
                     {active.metadata?.preview === "embedded"
@@ -3167,6 +3276,76 @@ export function App({ onLogout, session, username = "本机用户" }) {
           </section>
         </div>
       )}
+      {stagePreviewOpen && active && (
+        <div
+          className="modal-backdrop stage-preview-backdrop"
+          onMouseDown={() => setStagePreviewOpen(false)}
+        >
+          <section
+            className="stage-preview-modal glass-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`当前照片细节预览：${active.name}`}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="modal-title">
+              <div><Maximize2 size={18} /><h2>细节查看</h2></div>
+              <GlassButton
+                className="mini-button"
+                autoFocus
+                aria-label="关闭细节查看"
+                onClick={() => setStagePreviewOpen(false)}
+              ><X size={14} /></GlassButton>
+            </div>
+            <div
+              className="stage-preview-stage"
+              title="拖动调整调色前后对比"
+              onPointerDown={(event) => {
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+                updateStagePreviewSplit(event);
+              }}
+              onPointerMove={(event) => {
+                if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+                  updateStagePreviewSplit(event);
+                }
+              }}
+              onPointerUp={(event) => {
+                if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                }
+              }}
+              onPointerCancel={(event) => {
+                if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                }
+              }}
+            >
+              <canvas ref={stageOriginalPreviewCanvas} className="stage-preview-canvas original" />
+              <canvas
+                ref={stageStyledPreviewCanvas}
+                className="stage-preview-canvas styled"
+                style={{ clipPath: `inset(0 ${100 - stagePreviewSplit}% 0 0)` }}
+              />
+              <div className="stage-preview-divider" style={{ left: `${stagePreviewSplit}%` }}>
+                <span>↔</span>
+              </div>
+              <span className="stage-preview-label after">调色后</span>
+              <span className="stage-preview-label before">原图</span>
+            </div>
+            <div className="stage-preview-meta">
+              <div>
+                <strong>{active.name}</strong>
+                <span>
+                  {originalCanvas.current?.width && originalCanvas.current?.height
+                    ? `${originalCanvas.current.width} × ${originalCanvas.current.height} · 工作预览`
+                    : "工作预览"}
+                </span>
+              </div>
+              <small>拖动分隔线比较细节 · 点击遮罩或按 Esc 返回工作台</small>
+            </div>
+          </section>
+        </div>
+      )}
       {exportDialogOpen && active && (
         <div className="modal-backdrop" onMouseDown={() => {
           if (!isExporting) setExportDialogOpen(false);
@@ -3216,7 +3395,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               <div>
                 <span className="preset-export-badge">DIRECT PRESET EXPORT</span>
                 <strong>带走这套颜色，在专业软件继续编辑</strong>
-                <p>XMP 可用于 Lightroom / Camera Raw；33³ CUBE LUT 可用于 Photoshop、DaVinci Resolve 等支持 LUT 的软件；CLSTYLE 保留完整 V4.2 语义风格。</p>
+                <p>XMP 可用于 Lightroom / Camera Raw；33³ CUBE LUT 可用于 Photoshop、DaVinci Resolve 等支持 LUT 的软件；CLSTYLE 保留完整 V4.3 语义风格。</p>
                 <small>标准 CUBE 无法包含语义局部调整、质感和随机颗粒。</small>
               </div>
               <div>

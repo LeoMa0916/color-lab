@@ -340,10 +340,16 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
     const blue = data[index + 2] / 255;
     tetrahedralSampleInto(styleLuts.global, red, green, blue, mapped);
     if (hasToneCorrection) {
+      // The neutral-axis correction is measured from a grayscale ramp. Keep it
+      // authoritative for neutrals, but let the A/B and C/L color planes drive
+      // saturated pixels so colored skies and foliage do not cross histogram
+      // boundaries merely because their luminance matches a gray sample.
+      const inputChroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+      const neutralWeight = 1 - smoothstep(0.06, 0.28, inputChroma) * 0.9;
       const toneCorrection = sampleToneCorrection(
         toneCorrectionLut,
         luminance(red, green, blue),
-      );
+      ) * neutralWeight;
       mapped[0] = clampUnit(mapped[0] + toneCorrection);
       mapped[1] = clampUnit(mapped[1] + toneCorrection);
       mapped[2] = clampUnit(mapped[2] + toneCorrection);
