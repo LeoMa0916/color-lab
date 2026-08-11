@@ -541,6 +541,7 @@ function makeCurvePreviewBase(base) {
     data: context.getImageData(0, 0, width, height).data,
     width,
     height,
+    photoId: base.photoId,
   };
 }
 
@@ -1504,7 +1505,10 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const referenceInput = useRef(null);
   const targetInput = useRef(null);
   const styleInput = useRef(null);
+  const activePhotoIdRef = useRef(null);
+  const canvasPhotoIdRef = useRef(null);
   const active = targets.find((item) => item.id === activeId) || targets[0] || null;
+  activePhotoIdRef.current = active?.id || null;
   const settings = active?.settings || defaultSettings();
   const selectedTargets = useMemo(() => {
     const selected = new Set(selectedTargetIds);
@@ -2443,10 +2447,12 @@ export function App({ onLogout, session, username = "本机用户" }) {
     const canvas = styledCanvas.current;
     if (!canvas) return;
     const curves = { ...settings.curves, [channel]: points };
-    if (base) renderCurveBase(base, curves, canvas, curvePreviewOutput);
+    if (base?.photoId === active?.id) {
+      renderCurveBase(base, curves, canvas, curvePreviewOutput);
+    }
     else {
       const fallback = styledPreviewBase.current || styledBase.current;
-      if (fallback) {
+      if (fallback?.photoId === active?.id) {
         renderAdjustedBase(fallback, settings, curves, canvas, curvePreviewOutput);
       }
     }
@@ -2455,7 +2461,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   function previewBasic(previewSettings) {
     const base = styledPreviewBase.current || styledBase.current;
     const canvas = styledCanvas.current;
-    if (!base || !canvas) return;
+    if (!base || base.photoId !== active?.id || !canvas) return;
     renderAdjustedBase(
       base,
       previewSettings,
@@ -2476,13 +2482,28 @@ export function App({ onLogout, session, username = "本机用户" }) {
 
   useEffect(() => {
     if (!active?.url || !originalCanvas.current || !styledCanvas.current) return;
+    const photoId = active.id;
+    if (canvasPhotoIdRef.current !== photoId) {
+      canvasPhotoIdRef.current = photoId;
+      styledBase.current = null;
+      styledPreviewBase.current = null;
+      curveAdjustedPreviewBase.current = null;
+      styledOutput.current = null;
+      curvePreviewOutput.current = null;
+      const canvas = styledCanvas.current;
+      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+      canvas.dataset.photoId = photoId;
+      setDisplayHistogram(active.stats?.histogram || null);
+    }
     let cancelled = false;
     const timer = window.setTimeout(() => {
       setProcessing(true);
       loadImage(active.url).then(async (image) => {
-        if (cancelled) return;
+        if (cancelled || activePhotoIdRef.current !== photoId) return;
         const originalContext = drawSized(image, originalCanvas.current);
         drawSized(image, styledCanvas.current);
+        originalCanvas.current.dataset.photoId = photoId;
+        styledCanvas.current.dataset.photoId = photoId;
         const imageData = originalContext.getImageData(0, 0, originalCanvas.current.width, originalCanvas.current.height);
         const data = imageData.data;
         const maskKey = `${active.id}:${active.url}:${imageData.width}x${imageData.height}`;
@@ -2492,7 +2513,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
             makeAnalysisCanvas(originalCanvas.current),
             { timeoutMs: IS_MOBILE ? 2600 : 6500 },
           );
-          if (cancelled) return;
+          if (cancelled || activePhotoIdRef.current !== photoId) return;
           semanticMaskCache.current.set(maskKey, semanticMasks);
         }
         let source = active.stats;
@@ -2511,7 +2532,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
           );
         }
         const reference = referenceStats || source;
-        const styleLuts = await getStyleLuts(source, reference);
+        const styleLuts = await getStyleLuts(source, reference, {}, settings, photoId);
+        if (cancelled || activePhotoIdRef.current !== photoId) return;
         applyStyleLuts(
           data,
           imageData.width,
@@ -2527,11 +2549,12 @@ export function App({ onLogout, session, username = "本机用户" }) {
           reference,
           settings.strength / 100,
         );
-        if (cancelled) return;
+        if (cancelled || activePhotoIdRef.current !== photoId) return;
         const base = {
           data: new Uint8ClampedArray(data),
           width: imageData.width,
           height: imageData.height,
+          photoId,
         };
         styledBase.current = base;
         styledPreviewBase.current = makeCurvePreviewBase(base);
@@ -2549,9 +2572,9 @@ export function App({ onLogout, session, username = "本机用户" }) {
           curvePreviewOutput,
         );
         setBaseRevision((value) => value + 1);
-        setProcessing(false);
+        if (activePhotoIdRef.current === photoId) setProcessing(false);
       }).catch(() => {
-        if (!cancelled) setProcessing(false);
+        if (!cancelled && activePhotoIdRef.current === photoId) setProcessing(false);
       });
     }, 42);
     return () => {
@@ -2560,6 +2583,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
     };
   }, [
     active?.url,
+    active?.id,
     active?.stats,
     referenceStats,
     settings.strength,
@@ -2569,13 +2593,15 @@ export function App({ onLogout, session, username = "本机用户" }) {
   useEffect(() => {
     const base = styledBase.current;
     const canvas = styledCanvas.current;
-    if (!base || !canvas || basicDragging || curveDragging) return;
+    const photoId = active?.id;
+    if (!base || base.photoId !== photoId || !canvas || basicDragging || curveDragging) return;
     let cancelled = false;
     const frame = requestAnimationFrame(() => {
       const previewBase = styledPreviewBase.current;
       if (previewBase) {
         const cached = curveAdjustedPreviewBase.current;
-        const previewData = cached?.data.length === previewBase.data.length
+        const previewData = cached?.photoId === photoId
+          && cached.data.length === previewBase.data.length
           ? cached.data
           : new Uint8ClampedArray(previewBase.data.length);
         previewData.set(previewBase.data);
@@ -2589,6 +2615,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
           data: previewData,
           width: previewBase.width,
           height: previewBase.height,
+          photoId,
         };
       }
     });
@@ -2602,7 +2629,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
       },
       { photoId: `render:${active?.id || "preview"}` },
     ).then((result) => {
-      if (cancelled) return;
+      if (cancelled || activePhotoIdRef.current !== photoId) return;
       setActiveBackend(
         result.backend === "webgpu"
           ? "WebGPU"
@@ -2620,7 +2647,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
       );
       setDisplayHistogram(result.histogram);
     }).catch((error) => {
-      if (cancelled || error?.name === "AbortError") return;
+      if (cancelled || activePhotoIdRef.current !== photoId || error?.name === "AbortError") return;
       const output = renderAdjustedBase(
         base,
         settings,
@@ -2633,7 +2660,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
         { data: new Uint8ClampedArray(output) },
         { photoId: `histogram:${active?.id || "preview"}` },
       ).then((histogram) => {
-        if (!cancelled) setDisplayHistogram(histogram);
+        if (!cancelled && activePhotoIdRef.current === photoId) setDisplayHistogram(histogram);
       }).catch(() => {});
     });
     return () => {
@@ -2642,6 +2669,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
     };
   }, [
     baseRevision,
+    active?.id,
+    active?.url,
     settings.temperature,
     settings.tint,
     settings.exposure,

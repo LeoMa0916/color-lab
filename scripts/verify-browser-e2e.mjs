@@ -63,6 +63,10 @@ class Cdp {
       }
       this.handlers.get(message.method)?.forEach((handler) => handler(message.params));
     });
+    this.socket.addEventListener("close", () => {
+      this.pending.forEach(({ reject }) => reject(new Error("Chrome DevTools connection closed")));
+      this.pending.clear();
+    });
   }
 
   on(method, handler) {
@@ -264,6 +268,30 @@ try {
   assert(batchWorkflow.selectedAfter === 2, "Target multi-selection did not retain two photos");
   assert(batchWorkflow.exportLabel.includes("2"), "Batch export count is not visible in the primary action");
 
+  // Start several photo renders close together. A completed render from an
+  // older photo must never overwrite either half of the current comparison.
+  await evaluate(cdp, "document.querySelectorAll('.target-thumb')[1].click()");
+  await delay(20);
+  await evaluate(cdp, "document.querySelectorAll('.target-thumb')[0].click()");
+  await waitFor(
+    cdp,
+    "document.querySelector('canvas.original')?.dataset.photoId === 'demo-a' && document.querySelector('canvas.styled')?.dataset.photoId === 'demo-a'",
+  );
+  await delay(1800);
+  const switchedCanvasState = await evaluate(cdp, `(() => {
+    const original = document.querySelector('canvas.original');
+    const styled = document.querySelector('canvas.styled');
+    return {
+      activeName: document.querySelector('.target-thumb.active img')?.alt,
+      originalId: original?.dataset.photoId,
+      styledId: styled?.dataset.photoId,
+      sameDimensions: original?.width === styled?.width && original?.height === styled?.height,
+    };
+  })()`);
+  assert(switchedCanvasState.activeName === "海岸街道 01", "Rapid photo selection lost the active target");
+  assert(switchedCanvasState.originalId === switchedCanvasState.styledId, "Before/after canvases belong to different photos");
+  assert(switchedCanvasState.sameDimensions, "Before/after canvases kept different photo dimensions");
+  console.log("Rapid photo switching verification passed", switchedCanvasState);
   await evaluate(cdp, "document.querySelector('.reference-thumb').click()");
   await waitFor(cdp, "document.querySelector('.reference-preview-modal img')");
   const referencePreview = await evaluate(cdp, `(() => {
@@ -333,6 +361,7 @@ try {
     buttons: 0,
     clickCount: 1,
   });
+  await delay(120);
   const pannedTransform = await evaluate(
     cdp,
     "document.querySelector('.stage-preview-canvas.original').style.transform",
