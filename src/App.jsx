@@ -1049,8 +1049,14 @@ function Range({
     const next = normalize(event.target.value);
     liveValueRef.current = next;
     setLiveValue(next);
-    if (draggingRef.current) queuePreview(next);
-    else commit(next);
+    if (draggingRef.current) {
+      queuePreview(next);
+      // Commit every drag sample to React state. The synchronous preview keeps
+      // the canvas responsive, while this guarantees the final value is not
+      // lost when a browser omits pointerup after scrolling or leaving the
+      // slider hit area.
+      onChange(next);
+    } else commit(next);
   }
 
   function finishPointer() {
@@ -1142,12 +1148,19 @@ function Range({
         value={liveValue}
         disabled={disabled}
         aria-label={label}
-        onPointerDown={() => {
+        onPointerDown={(event) => {
           draggingRef.current = true;
+          try {
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+          } catch {
+            // Synthetic events and older mobile engines may not expose an
+            // active native pointer even though slider input still works.
+          }
           onInteractionChange?.(true);
         }}
         onPointerUp={finishPointer}
         onPointerCancel={finishPointer}
+        onLostPointerCapture={finishPointer}
         onChange={handleSliderChange}
       />
     </div>
@@ -1431,6 +1444,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const [referencePreview, setReferencePreview] = useState(null);
   const [stagePreviewOpen, setStagePreviewOpen] = useState(false);
   const [stagePreviewSplit, setStagePreviewSplit] = useState(50);
+  const [stagePreviewZoom, setStagePreviewZoom] = useState(1);
+  const [stagePreviewPan, setStagePreviewPan] = useState({ x: 0, y: 0 });
   const [dragImportActive, setDragImportActive] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [decodeStatus, setDecodeStatus] = useState("");
@@ -1471,6 +1486,10 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const styledCanvas = useRef(null);
   const stageOriginalPreviewCanvas = useRef(null);
   const stageStyledPreviewCanvas = useRef(null);
+  const stagePreviewViewport = useRef(null);
+  const stagePreviewView = useRef({ zoom: 1, pan: { x: 0, y: 0 } });
+  const stagePreviewPointers = useRef(new Map());
+  const stagePreviewGesture = useRef(null);
   const styledBase = useRef(null);
   const styledPreviewBase = useRef(null);
   const curveAdjustedPreviewBase = useRef(null);
@@ -2633,6 +2652,11 @@ export function App({ onLogout, session, username = "本机用户" }) {
   function openStagePreview() {
     if (!active || !originalCanvas.current || !styledCanvas.current) return;
     setStagePreviewSplit(split);
+    stagePreviewView.current = { zoom: 1, pan: { x: 0, y: 0 } };
+    stagePreviewPointers.current.clear();
+    stagePreviewGesture.current = null;
+    setStagePreviewZoom(1);
+    setStagePreviewPan({ x: 0, y: 0 });
     setStagePreviewOpen(true);
   }
 
@@ -2674,8 +2698,140 @@ export function App({ onLogout, session, username = "本机用户" }) {
   }
 
   function updateStagePreviewSplit(event) {
-    const rect = event.currentTarget.getBoundingClientRect();
+    const viewport = stagePreviewViewport.current || event.currentTarget;
+    const rect = viewport.getBoundingClientRect();
     setStagePreviewSplit(clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100));
+  }
+
+  function clampStagePreviewPan(pan, zoom) {
+    const viewport = stagePreviewViewport.current;
+    if (!viewport || zoom <= 1) return { x: 0, y: 0 };
+    const maximumX = viewport.clientWidth * (zoom - 1) / 2;
+    const maximumY = viewport.clientHeight * (zoom - 1) / 2;
+    return {
+      x: clamp(pan.x, -maximumX, maximumX),
+      y: clamp(pan.y, -maximumY, maximumY),
+    };
+  }
+
+  function applyStagePreviewView(zoom, pan) {
+    const boundedZoom = clamp(zoom, 1, 6);
+    const boundedPan = clampStagePreviewPan(pan, boundedZoom);
+    stagePreviewView.current = { zoom: boundedZoom, pan: boundedPan };
+    setStagePreviewZoom(boundedZoom);
+    setStagePreviewPan(boundedPan);
+  }
+
+  function zoomStagePreview(nextZoom, clientX, clientY) {
+    const viewport = stagePreviewViewport.current;
+    const current = stagePreviewView.current;
+    const zoom = clamp(nextZoom, 1, 6);
+    if (!viewport || zoom === current.zoom) return;
+    const rect = viewport.getBoundingClientRect();
+    const anchorX = Number.isFinite(clientX) ? clientX - rect.left - rect.width / 2 : 0;
+    const anchorY = Number.isFinite(clientY) ? clientY - rect.top - rect.height / 2 : 0;
+    const ratio = zoom / current.zoom;
+    applyStagePreviewView(zoom, {
+      x: anchorX - (anchorX - current.pan.x) * ratio,
+      y: anchorY - (anchorY - current.pan.y) * ratio,
+    });
+  }
+
+  function beginStagePreviewGesture(event) {
+    const viewport = stagePreviewViewport.current;
+    if (!viewport) return;
+    try {
+      viewport.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Pointer capture is an enhancement; wheel, buttons and direct pointer
+      // movement remain usable on engines that do not provide it.
+    }
+    stagePreviewPointers.current.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    const pointers = [...stagePreviewPointers.current.values()];
+    if (pointers.length >= 2) {
+      const [first, second] = pointers;
+      stagePreviewGesture.current = {
+        type: "pinch",
+        distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+        midpoint: { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 },
+        view: stagePreviewView.current,
+      };
+      return;
+    }
+    if (stagePreviewView.current.zoom > 1) {
+      stagePreviewGesture.current = {
+        type: "pan",
+        pointerId: event.pointerId,
+        start: { x: event.clientX, y: event.clientY },
+        pan: stagePreviewView.current.pan,
+      };
+    } else {
+      stagePreviewGesture.current = { type: "split", pointerId: event.pointerId };
+      updateStagePreviewSplit(event);
+    }
+  }
+
+  function moveStagePreviewGesture(event) {
+    if (!stagePreviewPointers.current.has(event.pointerId)) return;
+    stagePreviewPointers.current.set(event.pointerId, {
+      x: event.clientX,
+      y: event.clientY,
+    });
+    const gesture = stagePreviewGesture.current;
+    const pointers = [...stagePreviewPointers.current.values()];
+    if (pointers.length >= 2) {
+      const [first, second] = pointers;
+      const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+      const midpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+      const pinch = gesture?.type === "pinch" ? gesture : {
+        distance,
+        midpoint,
+        view: stagePreviewView.current,
+      };
+      const viewport = stagePreviewViewport.current;
+      const rect = viewport.getBoundingClientRect();
+      const zoom = clamp(pinch.view.zoom * distance / pinch.distance, 1, 6);
+      const ratio = zoom / pinch.view.zoom;
+      const startAnchor = {
+        x: pinch.midpoint.x - rect.left - rect.width / 2,
+        y: pinch.midpoint.y - rect.top - rect.height / 2,
+      };
+      const currentAnchor = {
+        x: midpoint.x - rect.left - rect.width / 2,
+        y: midpoint.y - rect.top - rect.height / 2,
+      };
+      applyStagePreviewView(zoom, {
+        x: currentAnchor.x - (startAnchor.x - pinch.view.pan.x) * ratio,
+        y: currentAnchor.y - (startAnchor.y - pinch.view.pan.y) * ratio,
+      });
+      return;
+    }
+    if (gesture?.type === "pan" && gesture.pointerId === event.pointerId) {
+      applyStagePreviewView(stagePreviewView.current.zoom, {
+        x: gesture.pan.x + event.clientX - gesture.start.x,
+        y: gesture.pan.y + event.clientY - gesture.start.y,
+      });
+    } else if (gesture?.type === "split") updateStagePreviewSplit(event);
+  }
+
+  function finishStagePreviewGesture(event) {
+    stagePreviewPointers.current.delete(event.pointerId);
+    const remaining = [...stagePreviewPointers.current.entries()];
+    if (remaining.length === 1 && stagePreviewView.current.zoom > 1) {
+      const [pointerId, point] = remaining[0];
+      stagePreviewGesture.current = {
+        type: "pan",
+        pointerId,
+        start: point,
+        pan: stagePreviewView.current.pan,
+      };
+    } else if (!remaining.length) stagePreviewGesture.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }
 
   return (
@@ -3290,45 +3446,100 @@ export function App({ onLogout, session, username = "本机用户" }) {
           >
             <div className="modal-title">
               <div><Maximize2 size={18} /><h2>细节查看</h2></div>
-              <GlassButton
-                className="mini-button"
-                autoFocus
-                aria-label="关闭细节查看"
-                onClick={() => setStagePreviewOpen(false)}
-              ><X size={14} /></GlassButton>
+              <div className="stage-preview-actions">
+                <div className="stage-preview-zoom glass-surface" aria-label="缩放控制">
+                  <button
+                    type="button"
+                    aria-label="缩小"
+                    disabled={stagePreviewZoom <= 1}
+                    onClick={() => zoomStagePreview(stagePreviewView.current.zoom - 0.5)}
+                  ><Minus size={13} /></button>
+                  <button
+                    type="button"
+                    className="stage-preview-zoom-value"
+                    title="恢复适合窗口"
+                    onClick={() => applyStagePreviewView(1, { x: 0, y: 0 })}
+                  >{Math.round(stagePreviewZoom * 100)}%</button>
+                  <button
+                    type="button"
+                    aria-label="放大"
+                    disabled={stagePreviewZoom >= 6}
+                    onClick={() => zoomStagePreview(stagePreviewView.current.zoom + 0.5)}
+                  ><Plus size={13} /></button>
+                </div>
+                <GlassButton
+                  className="mini-button"
+                  autoFocus
+                  aria-label="关闭细节查看"
+                  onClick={() => setStagePreviewOpen(false)}
+                ><X size={14} /></GlassButton>
+              </div>
             </div>
             <div
-              className="stage-preview-stage"
-              title="拖动调整调色前后对比"
-              onPointerDown={(event) => {
-                event.currentTarget.setPointerCapture?.(event.pointerId);
-                updateStagePreviewSplit(event);
+              ref={stagePreviewViewport}
+              className={`stage-preview-stage ${stagePreviewZoom > 1 ? "zoomed" : ""}`}
+              title={stagePreviewZoom > 1 ? "拖动查看放大后的细节" : "滚轮或双击放大；拖动调整前后对比"}
+              onWheel={(event) => {
+                event.preventDefault();
+                const factor = Math.exp(-event.deltaY * 0.0015);
+                zoomStagePreview(
+                  stagePreviewView.current.zoom * factor,
+                  event.clientX,
+                  event.clientY,
+                );
               }}
-              onPointerMove={(event) => {
-                if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-                  updateStagePreviewSplit(event);
-                }
+              onDoubleClick={(event) => {
+                if (stagePreviewView.current.zoom > 1) {
+                  applyStagePreviewView(1, { x: 0, y: 0 });
+                } else zoomStagePreview(2.5, event.clientX, event.clientY);
               }}
-              onPointerUp={(event) => {
-                if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-                  event.currentTarget.releasePointerCapture(event.pointerId);
-                }
-              }}
-              onPointerCancel={(event) => {
-                if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-                  event.currentTarget.releasePointerCapture(event.pointerId);
-                }
-              }}
+              onPointerDown={beginStagePreviewGesture}
+              onPointerMove={moveStagePreviewGesture}
+              onPointerUp={finishStagePreviewGesture}
+              onPointerCancel={finishStagePreviewGesture}
             >
-              <canvas ref={stageOriginalPreviewCanvas} className="stage-preview-canvas original" />
               <canvas
-                ref={stageStyledPreviewCanvas}
-                className="stage-preview-canvas styled"
-                style={{ clipPath: `inset(0 ${100 - stagePreviewSplit}% 0 0)` }}
+                ref={stageOriginalPreviewCanvas}
+                className="stage-preview-canvas original"
+                style={{ transform: `translate3d(${stagePreviewPan.x}px, ${stagePreviewPan.y}px, 0) scale(${stagePreviewZoom})` }}
               />
-              <div className="stage-preview-divider" style={{ left: `${stagePreviewSplit}%` }}>
-                <span>↔</span>
+              <div
+                className="stage-preview-styled-clip"
+                style={{ clipPath: `inset(0 ${100 - stagePreviewSplit}% 0 0)` }}
+              >
+                <canvas
+                  ref={stageStyledPreviewCanvas}
+                  className="stage-preview-canvas styled"
+                  style={{ transform: `translate3d(${stagePreviewPan.x}px, ${stagePreviewPan.y}px, 0) scale(${stagePreviewZoom})` }}
+                />
               </div>
+              <button
+                type="button"
+                className="stage-preview-divider"
+                style={{ left: `${stagePreviewSplit}%` }}
+                aria-label="拖动调节调色前后对比"
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  try {
+                    event.currentTarget.setPointerCapture?.(event.pointerId);
+                  } catch {
+                    // Keep direct dragging available without pointer capture.
+                  }
+                  updateStagePreviewSplit(event);
+                }}
+                onPointerMove={(event) => {
+                  if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+                    updateStagePreviewSplit(event);
+                  }
+                }}
+                onPointerUp={(event) => {
+                  if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+                    event.currentTarget.releasePointerCapture(event.pointerId);
+                  }
+                }}
+              >
+                <span>↔</span>
+              </button>
               <span className="stage-preview-label after">调色后</span>
               <span className="stage-preview-label before">原图</span>
             </div>
@@ -3341,7 +3552,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
                     : "工作预览"}
                 </span>
               </div>
-              <small>拖动分隔线比较细节 · 点击遮罩或按 Esc 返回工作台</small>
+              <small>滚轮、双击或双指缩放 · 放大后拖动画面 · 分隔线始终可比较前后</small>
             </div>
           </section>
         </div>

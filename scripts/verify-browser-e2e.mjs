@@ -293,6 +293,51 @@ try {
   assert(stagePreview.modalVisible && stagePreview.stageVisible, "Stage detail preview is not visible");
   assert(stagePreview.withinViewport, "Stage detail preview exceeds the desktop viewport");
   assert(stagePreview.canvases === 2, "Stage detail preview is missing before/after canvases");
+  await evaluate(cdp, `(() => {
+    const zoomIn = document.querySelector('.stage-preview-zoom button:last-child');
+    zoomIn.click();
+    zoomIn.click();
+  })()`);
+  await waitFor(cdp, "document.querySelector('.stage-preview-zoom-value')?.textContent === '200%'");
+  const zoomedTransform = await evaluate(
+    cdp,
+    "document.querySelector('.stage-preview-canvas.original').style.transform",
+  );
+  assert(zoomedTransform.includes("scale(2)"), "Stage detail preview did not apply real image zoom");
+  const zoomStageRect = await evaluate(cdp, `(() => {
+    const rect = document.querySelector('.stage-preview-stage').getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  })()`);
+  const panStartX = zoomStageRect.x + zoomStageRect.width * 0.72;
+  const panStartY = zoomStageRect.y + zoomStageRect.height * 0.62;
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: panStartX,
+    y: panStartY,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: panStartX - 80,
+    y: panStartY - 45,
+    button: "left",
+    buttons: 1,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: panStartX - 80,
+    y: panStartY - 45,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
+  const pannedTransform = await evaluate(
+    cdp,
+    "document.querySelector('.stage-preview-canvas.original').style.transform",
+  );
+  assert(!pannedTransform.includes("translate3d(0px, 0px"), "Zoomed detail preview did not pan");
   const detailDesktopShot = await cdp.send("Page.captureScreenshot", {
     format: "png",
     captureBeyondViewport: false,
@@ -367,7 +412,6 @@ try {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '0.75');
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    input.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1 }));
   })()`);
   await waitFor(
     cdp,
@@ -375,7 +419,9 @@ try {
   );
   await delay(1200);
   const basicChecksum = await evaluate(cdp, checksumExpression);
-  assert(initialChecksum !== basicChecksum, "Basic adjustment did not change the preview");
+  assert(initialChecksum !== basicChecksum, "Basic adjustment did not change the preview while dragging");
+  await evaluate(cdp, `document.querySelector('input[aria-label="曝光度"]')
+    .dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }))`);
 
   await evaluate(cdp, `(() => {
     const label = document.querySelector('[data-range-label="曝光度"] .range-label');
@@ -459,6 +505,8 @@ try {
 
   await evaluate(cdp, "document.querySelector('.stage-expand-button').click()");
   await waitFor(cdp, "document.querySelector('.stage-preview-modal')");
+  await evaluate(cdp, "document.querySelector('.stage-preview-zoom button:last-child').click()");
+  await waitFor(cdp, "document.querySelector('.stage-preview-zoom-value')?.textContent === '150%'");
   const mobileDetail = await evaluate(cdp, `(() => {
     const modal = document.querySelector('.stage-preview-modal');
     return {
@@ -466,10 +514,12 @@ try {
       bottom: modal.getBoundingClientRect().bottom,
       width: innerWidth,
       height: innerHeight,
+      transform: document.querySelector('.stage-preview-canvas.original').style.transform,
     };
   })()`);
   assert(mobileDetail.right <= mobileDetail.width, "Mobile detail preview overflows horizontally");
   assert(mobileDetail.bottom <= mobileDetail.height, "Mobile detail preview overflows vertically");
+  assert(mobileDetail.transform.includes("scale(1.5)"), "Mobile detail zoom control did not enlarge the image");
   const detailMobileShot = await cdp.send("Page.captureScreenshot", {
     format: "png",
     captureBeyondViewport: false,
