@@ -404,24 +404,55 @@ try {
     }
     return sum;
   })()`;
+  async function verifyContinuousRange(label, finalValue, liveDelay = 180) {
+    const encodedLabel = JSON.stringify(label);
+    await waitFor(cdp, `document.querySelector('input[aria-label=' + ${encodedLabel} + ']')`);
+    const before = await evaluate(cdp, checksumExpression);
+    await evaluate(cdp, `(() => {
+      const label = ${encodedLabel};
+      const input = document.querySelector('input[aria-label="' + label + '"]');
+      input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 7 }));
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      for (let step = 1; step <= 20; step += 1) {
+        setter.call(input, String((${Number(finalValue)} * step / 20).toFixed(4)));
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    })()`);
+    await delay(liveDelay);
+    const live = await evaluate(cdp, checksumExpression);
+    assert(before !== live, `${label} did not update the canvas during continuous input`);
+    await evaluate(cdp, `(() => {
+      const label = ${encodedLabel};
+      document.querySelector('input[aria-label="' + label + '"]')
+        .dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 7 }));
+    })()`);
+    await delay(1000);
+    const committed = await evaluate(cdp, checksumExpression);
+    assert(before !== committed, `${label} reverted after the final render`);
+  }
   const initialChecksum = await evaluate(cdp, checksumExpression);
   await waitFor(cdp, "document.querySelector('input[aria-label=\"曝光度\"]')");
   await evaluate(cdp, `(() => {
     const input = document.querySelector('input[aria-label="曝光度"]');
     input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1 }));
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '0.75');
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    for (let step = 1; step <= 24; step += 1) {
+      setter.call(input, String((0.75 * step / 24).toFixed(4)));
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
   })()`);
   await waitFor(
     cdp,
     "document.querySelector('input[aria-label=\"曝光度\"]').closest('.range-row').querySelector('output')?.textContent.includes('+0.75')",
   );
-  await delay(1200);
+  await delay(160);
   const basicChecksum = await evaluate(cdp, checksumExpression);
-  assert(initialChecksum !== basicChecksum, "Basic adjustment did not change the preview while dragging");
+  assert(initialChecksum !== basicChecksum, "Continuous basic adjustment did not update the live preview");
   await evaluate(cdp, `document.querySelector('input[aria-label="曝光度"]')
     .dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }))`);
+  await delay(1200);
+  const committedChecksum = await evaluate(cdp, checksumExpression);
+  assert(initialChecksum !== committedChecksum, "Final basic adjustment render reverted to the unadjusted image");
 
   await evaluate(cdp, `(() => {
     const label = document.querySelector('[data-range-label="曝光度"] .range-label');
@@ -434,6 +465,10 @@ try {
   await delay(1200);
   const resetChecksum = await evaluate(cdp, checksumExpression);
   assert(resetChecksum === initialChecksum, "Double-clicking a Basic label did not reset its parameter");
+
+  await verifyContinuousRange("色温", 32);
+  await verifyContinuousRange("饱和度", -48);
+  await verifyContinuousRange("参考光线", 76, 1400);
 
   await evaluate(cdp, "document.querySelector('.curve-section .inspector-disclosure-toggle').click()");
   await waitFor(cdp, "document.querySelector('.curve-canvas')");

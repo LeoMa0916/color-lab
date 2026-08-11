@@ -997,6 +997,7 @@ function Range({
   decimals = 0,
   defaultValue = null,
   disabled = false,
+  commitDuringDrag = false,
 }) {
   const [liveValue, setLiveValue] = useState(value);
   const [editing, setEditing] = useState(false);
@@ -1051,11 +1052,10 @@ function Range({
     setLiveValue(next);
     if (draggingRef.current) {
       queuePreview(next);
-      // Commit every drag sample to React state. The synchronous preview keeps
-      // the canvas responsive, while this guarantees the final value is not
-      // lost when a browser omits pointerup after scrolling or leaving the
-      // slider hit area.
-      onChange(next);
+      // A small subset of controls rebuilds the style base instead of using
+      // the basic pixel pass. Feed those controls into the debounced rebuild
+      // while keeping ordinary sliders on the single fast preview channel.
+      if (commitDuringDrag) onChange(next);
     } else commit(next);
   }
 
@@ -1161,7 +1161,7 @@ function Range({
         onPointerUp={finishPointer}
         onPointerCancel={finishPointer}
         onLostPointerCapture={finishPointer}
-        onChange={handleSliderChange}
+        onInput={handleSliderChange}
       />
     </div>
   );
@@ -1266,6 +1266,7 @@ function BasicAdjustmentsPanel({
                 value={settings[control.key] ?? 0}
                 defaultValue={BASIC_RESET_VALUES[control.key] ?? 0}
                 disabled={disabled}
+                commitDuringDrag={control.key === "referenceLighting"}
                 onInteractionChange={onInteractionChange}
                 onPreview={(value) => onPreview?.({
                   ...settings,
@@ -2464,6 +2465,15 @@ export function App({ onLogout, session, username = "本机用户" }) {
     );
   }
 
+  function handleBasicInteraction(activeInteraction) {
+    setBasicDragging(activeInteraction);
+    // If the comparison divider was left at the original-only edge, every
+    // adjustment is technically rendered but invisible. Reveal the styled
+    // side as soon as the user starts adjusting without disturbing normal
+    // split-screen comparisons.
+    if (activeInteraction && split < 12) setSplit(50);
+  }
+
   useEffect(() => {
     if (!active?.url || !originalCanvas.current || !styledCanvas.current) return;
     let cancelled = false;
@@ -2472,7 +2482,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
       loadImage(active.url).then(async (image) => {
         if (cancelled) return;
         const originalContext = drawSized(image, originalCanvas.current);
-        const styledContext = drawSized(image, styledCanvas.current);
+        drawSized(image, styledCanvas.current);
         const imageData = originalContext.getImageData(0, 0, originalCanvas.current.width, originalCanvas.current.height);
         const data = imageData.data;
         const maskKey = `${active.id}:${active.url}:${imageData.width}x${imageData.height}`;
@@ -2528,7 +2538,16 @@ export function App({ onLogout, session, username = "本机用户" }) {
         curveAdjustedPreviewBase.current = null;
         styledOutput.current = null;
         curvePreviewOutput.current = null;
-        styledContext.clearRect(0, 0, imageData.width, imageData.height);
+        // Reference-lighting and style-strength controls rebuild this base.
+        // Paint it immediately so an active interaction never leaves a blank
+        // or stale canvas while the asynchronous high-quality pass is paused.
+        renderAdjustedBase(
+          styledPreviewBase.current || base,
+          settings,
+          settings.curves,
+          styledCanvas.current,
+          curvePreviewOutput,
+        );
         setBaseRevision((value) => value + 1);
         setProcessing(false);
       }).catch(() => {
@@ -2550,7 +2569,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   useEffect(() => {
     const base = styledBase.current;
     const canvas = styledCanvas.current;
-    if (!base || !canvas) return;
+    if (!base || !canvas || basicDragging || curveDragging) return;
     let cancelled = false;
     const frame = requestAnimationFrame(() => {
       const previewBase = styledPreviewBase.current;
@@ -2642,6 +2661,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
     settings.grainColor,
     settings.grainHighlights,
     settings.curves,
+    basicDragging,
+    curveDragging,
   ]);
 
   function updateSplit(event) {
@@ -3176,7 +3197,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
             disabled={!active}
             onChange={updateActiveSettings}
             onPreview={previewBasic}
-            onInteractionChange={setBasicDragging}
+            onInteractionChange={handleBasicInteraction}
           />
           <InspectorDisclosure
             title="曲线"
@@ -3223,7 +3244,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
                 grain,
                 preset: "custom",
               })}
-              onInteractionChange={setBasicDragging}
+              onInteractionChange={handleBasicInteraction}
               onChange={(grain) => updateActiveSettings({ grain, preset: "custom" })}
             />
             <Range
@@ -3236,7 +3257,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               signed={false}
               disabled={!active}
               onPreview={(grainSize) => previewBasic({ ...settings, grainSize, preset: "custom" })}
-              onInteractionChange={setBasicDragging}
+              onInteractionChange={handleBasicInteraction}
               onChange={(grainSize) => updateActiveSettings({ grainSize, preset: "custom" })}
             />
             <Range
@@ -3247,7 +3268,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               signed={false}
               disabled={!active}
               onPreview={(grainRoughness) => previewBasic({ ...settings, grainRoughness, preset: "custom" })}
-              onInteractionChange={setBasicDragging}
+              onInteractionChange={handleBasicInteraction}
               onChange={(grainRoughness) => updateActiveSettings({ grainRoughness, preset: "custom" })}
             />
             <Range
@@ -3258,7 +3279,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               signed={false}
               disabled={!active}
               onPreview={(grainColor) => previewBasic({ ...settings, grainColor, preset: "custom" })}
-              onInteractionChange={setBasicDragging}
+              onInteractionChange={handleBasicInteraction}
               onChange={(grainColor) => updateActiveSettings({ grainColor, preset: "custom" })}
             />
             <Range
@@ -3269,7 +3290,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               signed={false}
               disabled={!active}
               onPreview={(grainHighlights) => previewBasic({ ...settings, grainHighlights, preset: "custom" })}
-              onInteractionChange={setBasicDragging}
+              onInteractionChange={handleBasicInteraction}
               onChange={(grainHighlights) => updateActiveSettings({ grainHighlights, preset: "custom" })}
             />
           </InspectorDisclosure>
