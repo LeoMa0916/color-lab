@@ -10,6 +10,7 @@ const scripts = [
   "verify:lut",
   "verify:texture",
   "verify:color",
+  "verify:v5",
   "verify:basic",
   "verify:curve",
   "verify:quality",
@@ -35,4 +36,4 @@ for (const script of scripts) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-console.log("\nColor Engine 4 quality gate passed.");
+console.log("\nColor Engine 5 quality gate passed.");

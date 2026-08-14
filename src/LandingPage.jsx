@@ -501,7 +501,7 @@ function HomeView({ onNavigate }) {
       </section>
       <section className="landing-bottom">
         <p className="hero-description">
-          从样片读取影调、色彩、光线与质感，让 Color Engine 4 建立属于你的可编辑风格。
+          从样片读取影调、色彩、光线与质感，让 Color Engine 5 建立属于你的可编辑风格，并可导出预设与 LUT。
         </p>
         <button className="hero-explore" type="button" onClick={() => onNavigate("capability")}>
           探索色彩引擎 <ArrowRight size={16} />
@@ -522,7 +522,7 @@ function CapabilityView({ onNavigate }) {
   return (
     <div className="page-layout detail-view">
       <section className="detail-copy">
-        <p className="page-kicker">COLOR ENGINE 4</p>
+        <p className="page-kicker">COLOR ENGINE 5</p>
         <h1>读取的不只是颜色，<br />还有照片的光。</h1>
         <p>风格被拆成影调、光源、语义区域、三维色彩关系与多尺度质感，再以可编辑参数重新组合。</p>
         <button className="page-inline-action" type="button" onClick={() => onNavigate("privacy")}>

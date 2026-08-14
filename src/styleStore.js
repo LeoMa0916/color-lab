@@ -50,8 +50,8 @@ function decodeTypedArray(value) {
 export function serializeClstyle(style) {
   const envelope = {
     format: "com.colorlab.clstyle",
-    schemaVersion: 4,
-    engine: "Color Engine 4.3",
+    schemaVersion: 5,
+    engine: "Color Engine 5",
     exportedAt: new Date().toISOString(),
     style,
   };
@@ -71,10 +71,10 @@ export function deserializeClstyle(text) {
     value?.__clstyleTypedArray ? decodeTypedArray(value) : value);
   if (
     envelope?.format !== "com.colorlab.clstyle"
-    || envelope.schemaVersion !== 4
+    || ![4, 5].includes(envelope.schemaVersion)
     || !envelope.style?.stats
   ) {
-    throw new Error("这不是有效的 Color Engine 4 风格文件");
+    throw new Error("这不是有效的 Color Engine 4 / 5 风格文件");
   }
   return envelope.style;
 }

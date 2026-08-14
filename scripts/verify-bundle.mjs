@@ -27,7 +27,7 @@ const styles = assets
   .map((name) => readFileSync(new URL(name, assetDirectory), "utf8"))
   .join("\n");
 const productionText = `${indexHtml}\n${scripts}\n${styles}`;
-assert(scripts.includes("Color Engine 4"), "Production bundle does not identify Color Engine 4");
+assert(scripts.includes("Color Engine 5"), "Production bundle does not identify Color Engine 5");
 assert(scripts.includes("参考驱动近似"), "Calibration disclosure is missing from production bundle");
 assert(scripts.includes("RAW 预览模式"), "RAW fallback disclosure is missing");
 assert(scripts.includes("worker-cpu"), "CPU compatibility backend is missing");

@@ -45,33 +45,40 @@ function protectToneRange(red, green, blue, mapped) {
     Math.min(maximumLift, mappedLight - inputLight),
   );
   const correction = inputLight + limitedShift - mappedLight;
-  const protectedColor = [
-    clampUnit(mapped[0] + correction),
-    clampUnit(mapped[1] + correction),
-    clampUnit(mapped[2] + correction),
-  ];
+  const protectedRed = clampUnit(mapped[0] + correction);
+  const protectedGreen = clampUnit(mapped[1] + correction);
+  const protectedBlue = clampUnit(mapped[2] + correction);
   const inputChroma = Math.max(red, green, blue) - Math.min(red, green, blue);
-  const protectedLight = luminance(...protectedColor);
-  const protectedChroma = Math.max(...protectedColor) - Math.min(...protectedColor);
+  const protectedLight = luminance(protectedRed, protectedGreen, protectedBlue);
+  const protectedChroma = Math.max(protectedRed, protectedGreen, protectedBlue)
+    - Math.min(protectedRed, protectedGreen, protectedBlue);
   const chromaHighlightWeight = smoothstep(0.52, 0.9, inputLight);
   const minimumChroma = inputChroma * (0.34 + chromaHighlightWeight * 0.24);
   if (
     chromaHighlightWeight <= 0.02
     || inputChroma <= 0.012
     || protectedChroma >= minimumChroma
-  ) return protectedColor;
+  ) {
+    mapped[0] = protectedRed;
+    mapped[1] = protectedGreen;
+    mapped[2] = protectedBlue;
+    return mapped;
+  }
 
   const hueScale = minimumChroma / inputChroma;
-  const huePreserved = [
-    clampUnit(protectedLight + (red - inputLight) * hueScale),
-    clampUnit(protectedLight + (green - inputLight) * hueScale),
-    clampUnit(protectedLight + (blue - inputLight) * hueScale),
-  ];
   const blend = chromaHighlightWeight
     * clampUnit((minimumChroma - protectedChroma) / Math.max(0.001, minimumChroma))
     * 0.86;
-  return protectedColor.map((value, channel) =>
-    clampUnit(value + (huePreserved[channel] - value) * blend));
+  mapped[0] = clampUnit(protectedRed + (
+    clampUnit(protectedLight + (red - inputLight) * hueScale) - protectedRed
+  ) * blend);
+  mapped[1] = clampUnit(protectedGreen + (
+    clampUnit(protectedLight + (green - inputLight) * hueScale) - protectedGreen
+  ) * blend);
+  mapped[2] = clampUnit(protectedBlue + (
+    clampUnit(protectedLight + (blue - inputLight) * hueScale) - protectedBlue
+  ) * blend);
+  return mapped;
 }
 
 function protectToneRangeAdaptive(red, green, blue, mapped, toneGuard) {
@@ -103,33 +110,40 @@ function protectToneRangeAdaptive(red, green, blue, mapped, toneGuard) {
     Math.min(maximumLift, mappedLight - inputLight),
   );
   const correction = inputLight + limitedShift - mappedLight;
-  const protectedColor = [
-    clampUnit(mapped[0] + correction),
-    clampUnit(mapped[1] + correction),
-    clampUnit(mapped[2] + correction),
-  ];
+  const protectedRed = clampUnit(mapped[0] + correction);
+  const protectedGreen = clampUnit(mapped[1] + correction);
+  const protectedBlue = clampUnit(mapped[2] + correction);
   const inputChroma = Math.max(red, green, blue) - Math.min(red, green, blue);
-  const protectedLight = luminance(...protectedColor);
-  const protectedChroma = Math.max(...protectedColor) - Math.min(...protectedColor);
+  const protectedLight = luminance(protectedRed, protectedGreen, protectedBlue);
+  const protectedChroma = Math.max(protectedRed, protectedGreen, protectedBlue)
+    - Math.min(protectedRed, protectedGreen, protectedBlue);
   const chromaHighlightWeight = smoothstep(0.52, 0.9, inputLight);
   const minimumChroma = inputChroma * (0.34 + chromaHighlightWeight * 0.24);
   if (
     chromaHighlightWeight <= 0.02
     || inputChroma <= 0.012
     || protectedChroma >= minimumChroma
-  ) return protectedColor;
+  ) {
+    mapped[0] = protectedRed;
+    mapped[1] = protectedGreen;
+    mapped[2] = protectedBlue;
+    return mapped;
+  }
 
   const hueScale = minimumChroma / inputChroma;
-  const huePreserved = [
-    clampUnit(protectedLight + (red - inputLight) * hueScale),
-    clampUnit(protectedLight + (green - inputLight) * hueScale),
-    clampUnit(protectedLight + (blue - inputLight) * hueScale),
-  ];
   const blend = chromaHighlightWeight
     * clampUnit((minimumChroma - protectedChroma) / Math.max(0.001, minimumChroma))
     * 0.86;
-  return protectedColor.map((value, channel) =>
-    clampUnit(value + (huePreserved[channel] - value) * blend));
+  mapped[0] = clampUnit(protectedRed + (
+    clampUnit(protectedLight + (red - inputLight) * hueScale) - protectedRed
+  ) * blend);
+  mapped[1] = clampUnit(protectedGreen + (
+    clampUnit(protectedLight + (green - inputLight) * hueScale) - protectedGreen
+  ) * blend);
+  mapped[2] = clampUnit(protectedBlue + (
+    clampUnit(protectedLight + (blue - inputLight) * hueScale) - protectedBlue
+  ) * blend);
+  return mapped;
 }
 
 function lutIndex(size, red, green, blue) {
@@ -148,7 +162,7 @@ export function createIdentityLut(size = 33) {
       }
     }
   }
-  return { size, data };
+  return { size, data, identity: true };
 }
 
 export function createLutFromRgba(data, size) {
@@ -332,6 +346,12 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
     toneGuard
     && (toneGuard.toeLift || toneGuard.shoulderDrop || toneGuard.rangeCompression),
   );
+  if (
+    styleLuts.global?.identity
+    && !hasResiduals
+    && !hasToneCorrection
+    && !hasToneGuard
+  ) return data;
   for (let pixel = 0; pixel < width * height; pixel += 1) {
     const index = pixel * 4;
     if (data[index + 3] < 16) continue;
@@ -380,14 +400,12 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
       totalWeight += weight;
     }
     const normalization = totalWeight > 1 ? 1 / totalWeight : 1;
-    const mappedWithResidual = [
-      mapped[0] + residual[0] * normalization,
-      mapped[1] + residual[1] * normalization,
-      mapped[2] + residual[2] * normalization,
-    ];
+    delta[0] = mapped[0] + residual[0] * normalization;
+    delta[1] = mapped[1] + residual[1] * normalization;
+    delta[2] = mapped[2] + residual[2] * normalization;
     const protectedColor = hasToneGuard
-      ? protectToneRangeAdaptive(red, green, blue, mappedWithResidual, toneGuard)
-      : protectToneRange(red, green, blue, mappedWithResidual);
+      ? protectToneRangeAdaptive(red, green, blue, delta, toneGuard)
+      : protectToneRange(red, green, blue, delta);
     data[index] = protectedColor[0] * 255;
     data[index + 1] = protectedColor[1] * 255;
     data[index + 2] = protectedColor[2] * 255;
@@ -413,7 +431,7 @@ export function residualLut(globalLut, regionalLut) {
   return { size, data };
 }
 
-export function cubeFromLut(lut, name = "Color Engine 4") {
+export function cubeFromLut(lut, name = "Color Engine 5") {
   const lines = [
     `TITLE "${name.replaceAll("\"", "'")}"`,
     `LUT_3D_SIZE ${lut.size}`,

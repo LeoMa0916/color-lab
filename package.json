@@ -13,6 +13,7 @@
     "verify:basic": "node scripts/verify-basic-adjustments.mjs",
     "verify:browser": "node scripts/verify-browser-e2e.mjs",
     "verify:color": "node scripts/verify-color-engine.mjs",
+    "verify:v5": "node scripts/verify-color-plane-v5.mjs",
     "verify:color-management": "node scripts/verify-color-management.mjs",
     "verify:curve": "node scripts/verify-curve.mjs",
     "verify:datasets": "node scripts/verify-datasets.mjs",

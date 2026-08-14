@@ -1414,6 +1414,158 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .range-number-input::-webkit-inner-spin-button,
 .range-number-input::-webkit-outer-spin-button { appearance: none; }
 
+.color-plane-section .inspector-disclosure-body {
+  padding-bottom: 6px;
+}
+
+.color-plane-intro {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 12px;
+}
+.color-plane-intro strong {
+  color: #e9ebef;
+  font-size: 10px;
+  letter-spacing: .01em;
+}
+.color-plane-intro span {
+  color: #777e89;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.color-plane-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(7, 9, 13, .42);
+}
+.color-plane-tabs button {
+  min-height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #777d87;
+  font-size: 9px;
+  cursor: pointer;
+}
+.color-plane-tabs button.active {
+  background: linear-gradient(145deg, rgba(255,255,255,.15), rgba(255,255,255,.055));
+  color: #f4f5f7;
+  box-shadow: inset 0 1px rgba(255,255,255,.12), 0 4px 12px rgba(0,0,0,.18);
+}
+
+.ab-plane {
+  position: relative;
+  width: min(100%, 216px);
+  aspect-ratio: 1;
+  margin: 12px auto 5px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 18px;
+  background: #10141a;
+  box-shadow: inset 0 1px rgba(255,255,255,.08), inset 0 -18px 42px rgba(0,0,0,.28);
+}
+.ab-plane-spectrum {
+  position: absolute;
+  inset: 15px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, #777 0 8%, transparent 46%),
+    conic-gradient(from 0deg, #ff5a5f, #ffb340, #f4e85e, #5fe174, #42dfcf, #54a9ff, #886bff, #e45bce, #ff5a5f);
+  filter: saturate(.88);
+  opacity: .68;
+  -webkit-mask-image: radial-gradient(circle, transparent 0 8%, #000 32%, #000 65%, transparent 83%);
+  mask-image: radial-gradient(circle, transparent 0 8%, #000 32%, #000 65%, transparent 83%);
+}
+.ab-plane svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+.plane-guide,
+.plane-spoke {
+  fill: none;
+  stroke: rgba(235,241,255,.14);
+  stroke-width: .75;
+  pointer-events: none;
+}
+.plane-spoke { stroke: rgba(235,241,255,.08); }
+.plane-mesh {
+  fill: rgba(231,238,255,.045);
+  stroke: rgba(236,241,255,.58);
+  stroke-width: 1.15;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.plane-node {
+  fill: #11161d;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  cursor: grab;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,.55));
+}
+.plane-node:active { cursor: grabbing; }
+.plane-node.selected {
+  fill: currentColor;
+  stroke: rgba(255,255,255,.92);
+  stroke-width: 1.8;
+}
+
+.plane-readout {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 2px;
+  color: #858b94;
+  font-size: 8px;
+}
+.plane-readout span { display: flex; align-items: center; gap: 5px; }
+.plane-readout i { width: 7px; height: 7px; border-radius: 50%; }
+.plane-readout b { color: #c8ccd2; font-weight: 540; font-variant-numeric: tabular-nums; }
+
+.cl-plane {
+  margin: 9px 0 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.085);
+  border-radius: 13px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.045), transparent 45%),
+    rgba(8,11,16,.45);
+}
+.cl-plane-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px 0;
+}
+.cl-plane-title strong { color: #dfe2e7; font-size: 9px; }
+.cl-plane-title span { color: #686f7a; font-size: 7px; }
+.cl-plane svg { display: block; width: 100%; height: 104px; touch-action: none; }
+.cl-baseline { stroke: rgba(255,255,255,.12); stroke-width: 1; stroke-dasharray: 3 3; }
+.cl-curve {
+  fill: none;
+  stroke: #dce7ff;
+  stroke-width: 2;
+  filter: drop-shadow(0 0 4px rgba(120,164,255,.35));
+  pointer-events: none;
+}
+.cl-node {
+  fill: #151a22;
+  stroke: #e7edfb;
+  stroke-width: 2;
+  cursor: ns-resize;
+}
+
+.color-plane-section .range-row { margin-bottom: 13px; }
+
 .effects-section .inspector-disclosure-body { padding-bottom: 2px; }
 
 .palette-section .inspector-disclosure-body > div {

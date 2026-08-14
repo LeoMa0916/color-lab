@@ -63,8 +63,8 @@ assert(restored.body.session.username === username, "Session was not restored");
 const styleId = `style_${crypto.randomUUID().replaceAll("-", "")}`;
 const serialized = JSON.stringify({
   format: "com.colorlab.clstyle",
-  schemaVersion: 4,
-  engine: "Color Engine 4",
+  schemaVersion: 5,
+  engine: "Color Engine 5",
   style: {
     id: styleId,
     name: "Cloud QA",

@@ -433,6 +433,57 @@ try {
     }
     return sum;
   })()`;
+  await evaluate(cdp, "document.querySelector('.color-plane-section .inspector-disclosure-toggle').click()");
+  await waitFor(cdp, "document.querySelector('.color-plane-section .plane-node')");
+  await evaluate(cdp, "document.querySelector('.color-plane-section').scrollIntoView({ block: 'center' })");
+  await delay(180);
+  const planeBefore = await evaluate(cdp, checksumExpression);
+  const planeNode = await evaluate(cdp, `(() => {
+    const rect = document.querySelector('.color-plane-section .plane-node').getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  })()`);
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: planeNode.x,
+    y: planeNode.y,
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: planeNode.x + 18,
+    y: planeNode.y - 24,
+    button: "left",
+    buttons: 1,
+  });
+  await delay(180);
+  const planeLive = await evaluate(cdp, checksumExpression);
+  assert(planeBefore !== planeLive, "V5 A/B color-plane node did not update the live preview");
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: planeNode.x + 18,
+    y: planeNode.y - 24,
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+  });
+  await delay(1200);
+  const planeCommitted = await evaluate(cdp, checksumExpression);
+  assert(planeBefore !== planeCommitted, "V5 A/B edit reverted after its full-quality render");
+  await evaluate(cdp, "document.querySelector('.color-plane-section .reset-curve').click()");
+  await delay(1200);
+  const planeReset = await evaluate(cdp, checksumExpression);
+  assert(planeReset === planeBefore, "V5 color-plane reset did not restore the image");
+  const colorPlaneShot = await cdp.send("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+  });
+  writeFileSync(
+    join(project, "qa-private", "v5-color-plane-desktop.png"),
+    Buffer.from(colorPlaneShot.data, "base64"),
+  );
+
   async function verifyContinuousRange(label, finalValue, liveDelay = 180) {
     const encodedLabel = JSON.stringify(label);
     await waitFor(cdp, `document.querySelector('input[aria-label=' + ${encodedLabel} + ']')`);

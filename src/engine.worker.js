@@ -85,7 +85,7 @@ self.onmessage = async (event) => {
         ? payload.data
         : new Uint8ClampedArray(payload.data);
       const sourceSample = new Uint8ClampedArray(output);
-      report(12, "正在应用 V4 色彩映射");
+      report(12, "正在应用 V5 色彩映射");
       applyStyleLuts(
         output,
         payload.width,

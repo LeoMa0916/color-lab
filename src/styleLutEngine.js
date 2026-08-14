@@ -208,7 +208,7 @@ export function buildStyleLuts(
     residuals[region] = residualLut(global, regional);
   });
   return {
-    version: 4,
+    version: 5,
     global,
     residuals,
     toneGuard: buildToneGuard(source, reference),

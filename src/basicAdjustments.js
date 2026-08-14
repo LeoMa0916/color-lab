@@ -1,3 +1,8 @@
+import {
+  applyColorPlaneAdjustments,
+  hasColorPlaneAdjustments,
+} from "./colorPlaneEngine.js";
+
 function clamp(value, minimum = 0, maximum = 1) {
   return Math.min(maximum, Math.max(minimum, value));
 }
@@ -75,10 +80,12 @@ function filmGrainAt(pixel, width, height, light, settings) {
   const highlightFade = 1 - smoothstep(0.58, 0.98, light) * (1 - highlightResponse);
   const amplitude = amount * 2.15 * shadowWeight * highlightFade;
   const base = luminanceNoise * amplitude;
-  const redNoise = smoothNoise(x, y, cellSize, seed ^ 0x1f123bb5)
-    * amplitude * colorRatio;
-  const blueNoise = smoothNoise(x, y, cellSize, seed ^ 0x5f356495)
-    * amplitude * colorRatio;
+  // Derive the low-amplitude chroma grain from the two independent noise
+  // bands already sampled above. This preserves deterministic film-like
+  // channel variation without two additional four-corner noise lookups per
+  // pixel, which is significant for 24MP Worker exports.
+  const redNoise = coarse * amplitude * colorRatio;
+  const blueNoise = -coarse * 0.73 * amplitude * colorRatio;
   return [
     base + redNoise,
     base - (redNoise + blueNoise) * 0.28,
@@ -185,6 +192,7 @@ function boxBlur(source, width, height, radius) {
 }
 
 export function applyBasicAdjustments(data, width, height, settings) {
+  const hasColorPlane = hasColorPlaneAdjustments(settings.colorPlane);
   const hasPixelAdjustments = [
     "temperature",
     "tint",
@@ -201,7 +209,9 @@ export function applyBasicAdjustments(data, width, height, settings) {
   ].some((key) => settings[key]);
   const texture = clamp((settings.texture ?? 0) / 100, -1, 1);
   const clarity = clamp((settings.clarity ?? 0) / 100, -1, 1);
-  if (!hasPixelAdjustments && !texture && !clarity) return data;
+  if (!hasPixelAdjustments && !texture && !clarity && !hasColorPlane) return data;
+
+  if (hasColorPlane) applyColorPlaneAdjustments(data, settings.colorPlane);
 
   if (hasPixelAdjustments) {
     const toneLut = Float32Array.from(

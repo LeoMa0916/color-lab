@@ -12,7 +12,7 @@ function AppLoading({ label = "正在恢复工作空间" }) {
       <div className="session-boot-orb" aria-hidden="true" />
       <div className="session-boot-mark"><Sparkles size={22} /></div>
       <strong>{label}</strong>
-      <span><LoaderCircle className="spin" size={15} />Color Engine 4</span>
+        <span><LoaderCircle className="spin" size={15} />Color Engine 5</span>
     </main>
   );
 }

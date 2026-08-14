@@ -1,4 +1,5 @@
 import { smoothCurveLut } from "./curveMath.js";
+import { hasColorPlaneAdjustments } from "./colorPlaneEngine.js";
 
 export function detectRenderBackend(environment = globalThis) {
   const navigatorObject = environment.navigator;
@@ -164,7 +165,8 @@ class WebGpuBasicRenderer {
 
   async render(payload) {
     if (
-      payload.settings.texture
+      hasColorPlaneAdjustments(payload.settings.colorPlane)
+      || payload.settings.texture
       || payload.settings.clarity
       || payload.settings.dehaze
     ) {
@@ -418,6 +420,9 @@ class WebGl2BasicRenderer {
   }
 
   async render(payload) {
+    if (hasColorPlaneAdjustments(payload.settings.colorPlane)) {
+      throw new Error("V5 色彩平面需要 Worker 精确渲染");
+    }
     if (
       payload.settings.texture
       || payload.settings.clarity

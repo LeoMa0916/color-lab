@@ -34,6 +34,11 @@ import {
   makePalette,
 } from "./colorEngine";
 import { applyBasicAdjustments } from "./basicAdjustments";
+import {
+  COLOR_PLANE_HUES,
+  defaultColorPlaneSettings,
+  normalizeColorPlaneSettings,
+} from "./colorPlaneEngine";
 import { applyCurveLuts, smoothCurveLut as curveLut } from "./curveMath";
 import {
   imageFrameToCanvas,
@@ -176,6 +181,7 @@ function defaultSettings() {
     saturation: -2,
     grain: 6,
     ...BASIC_DEFAULTS,
+    colorPlane: defaultColorPlaneSettings(),
     curves: structuredClone(DEFAULT_CURVES),
   };
 }
@@ -516,10 +522,10 @@ function withTimeout(promise, milliseconds, message) {
   ]).finally(() => globalThis.clearTimeout(timer));
 }
 
-function makeCurvePreviewBase(base) {
+function makeCurvePreviewBase(base, maximumSide = CURVE_PREVIEW_MAX_SIDE) {
   const longestSide = Math.max(base.width, base.height);
-  if (longestSide <= CURVE_PREVIEW_MAX_SIDE) return base;
-  const scale = CURVE_PREVIEW_MAX_SIDE / longestSide;
+  if (longestSide <= maximumSide) return base;
+  const scale = maximumSide / longestSide;
   const width = Math.max(1, Math.round(base.width * scale));
   const height = Math.max(1, Math.round(base.height * scale));
   const source = document.createElement("canvas");
@@ -1287,6 +1293,263 @@ function BasicAdjustmentsPanel({
   );
 }
 
+const COLOR_PLANE_TABS = [
+  { id: "global", label: "全局" },
+  { id: "shadows", label: "暗部" },
+  { id: "midtones", label: "中间调" },
+  { id: "highlights", label: "高光" },
+];
+
+function circularDistance(value) {
+  return ((value + 180) % 360 + 360) % 360 - 180;
+}
+
+function smoothPolylinePath(points) {
+  if (points.length < 2) return "";
+  let path = `M ${points[0][0]} ${points[0][1]}`;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const previous = points[Math.max(0, index - 1)];
+    const current = points[index];
+    const next = points[index + 1];
+    const following = points[Math.min(points.length - 1, index + 2)];
+    path += ` C ${current[0] + (next[0] - previous[0]) / 6} ${current[1] + (next[1] - previous[1]) / 6}`;
+    path += ` ${next[0] - (following[0] - current[0]) / 6} ${next[1] - (following[1] - current[1]) / 6}`;
+    path += ` ${next[0]} ${next[1]}`;
+  }
+  return path;
+}
+
+function ColorPlaneEditor({ settings, disabled, onChange, onPreview, onInteractionChange }) {
+  const normalized = useMemo(
+    () => normalizeColorPlaneSettings(settings.colorPlane),
+    [settings.colorPlane],
+  );
+  const [draft, setDraft] = useState(normalized);
+  const [tone, setTone] = useState("global");
+  const [selectedHue, setSelectedHue] = useState(0);
+  const dragState = useRef(null);
+  const draftRef = useRef(normalized);
+
+  useEffect(() => {
+    if (dragState.current) return;
+    const next = normalizeColorPlaneSettings(settings.colorPlane);
+    draftRef.current = next;
+    setDraft(next);
+  }, [settings.colorPlane]);
+
+  function publish(next, commit = false) {
+    draftRef.current = next;
+    setDraft(next);
+    const nextSettings = { ...settings, colorPlane: next, preset: "custom" };
+    onPreview?.(nextSettings);
+    if (commit) onChange({ colorPlane: next, preset: "custom" });
+  }
+
+  function pointFromEvent(event, element) {
+    const rect = element.getBoundingClientRect();
+    return {
+      x: (event.clientX - rect.left) / rect.width * 200,
+      y: (event.clientY - rect.top) / rect.height * Number(element.dataset.height || 200),
+    };
+  }
+
+  function updateHueNode(event) {
+    const activeDrag = dragState.current;
+    if (!activeDrag || activeDrag.kind !== "hue") return;
+    const point = pointFromEvent(event, activeDrag.element);
+    const dx = point.x - 100;
+    const dy = point.y - 100;
+    const angle = ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360;
+    const radius = Math.hypot(dx, dy);
+    const layer = draftRef.current.hueLayers[tone].map((node, index) => index === activeDrag.index
+      ? {
+        ...node,
+        hueShift: clamp(circularDistance(angle - node.hue), -55, 55),
+        saturation: clamp((radius / 58 - 1) * 100, -75, 75),
+      }
+      : node);
+    publish({
+      ...draftRef.current,
+      hueLayers: { ...draftRef.current.hueLayers, [tone]: layer },
+    });
+  }
+
+  function updateLuminanceNode(event) {
+    const activeDrag = dragState.current;
+    if (!activeDrag || activeDrag.kind !== "luminance") return;
+    const point = pointFromEvent(event, activeDrag.element);
+    const shift = clamp((55 - point.y) / 42 * 45, -45, 45);
+    const luminance = draftRef.current.luminance.map((node, index) =>
+      index === activeDrag.index ? { ...node, shift } : node);
+    publish({ ...draftRef.current, luminance });
+  }
+
+  function finishDrag(event) {
+    if (!dragState.current) return;
+    try {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // Pointer capture is best effort on older touch engines.
+    }
+    dragState.current = null;
+    publish(draftRef.current, true);
+    onInteractionChange?.(false);
+  }
+
+  const hueNodes = draft.hueLayers[tone];
+  const luminancePoints = draft.luminance.map((node, index) => [
+    20 + index * 40,
+    55 - node.shift / 45 * 42,
+  ]);
+  const selected = hueNodes[selectedHue];
+  return (
+    <InspectorDisclosure
+      title="色彩平面"
+      meta="V5 · A/B + C/L"
+      className="color-plane-section"
+      action={(
+        <GlassButton
+          className="reset-curve"
+          disabled={disabled}
+          onClick={() => publish(defaultColorPlaneSettings(), true)}
+        >
+          <ArrowCounterClockwise size={13} />重置
+        </GlassButton>
+      )}
+    >
+      <div className="color-plane-intro">
+        <strong>感知色彩空间</strong>
+        <span>拖动节点改变相邻颜色；中心控制饱和，旋转控制色相。</span>
+      </div>
+      <div className="color-plane-tabs glass-surface" role="tablist" aria-label="明度层">
+        {COLOR_PLANE_TABS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={tone === item.id}
+            className={tone === item.id ? "active" : ""}
+            onClick={() => setTone(item.id)}
+          >{item.label}</button>
+        ))}
+      </div>
+      <div className="ab-plane" aria-label="A/B 色彩平面">
+        <div className="ab-plane-spectrum" />
+        <svg
+          viewBox="0 0 200 200"
+          data-height="200"
+          onPointerMove={updateHueNode}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+        >
+          {[30, 58, 86].map((radius) => <circle key={radius} cx="100" cy="100" r={radius} className="plane-guide" />)}
+          {COLOR_PLANE_HUES.map((hue) => {
+            const radians = hue * Math.PI / 180;
+            return <line key={hue} x1="100" y1="100" x2={100 + Math.cos(radians) * 88} y2={100 + Math.sin(radians) * 88} className="plane-spoke" />;
+          })}
+          <path
+            className="plane-mesh"
+            d={`${hueNodes.map((node, index) => {
+              const angle = (node.hue + node.hueShift) * Math.PI / 180;
+              const radius = 58 * (1 + node.saturation / 100);
+              return `${index ? "L" : "M"} ${100 + Math.cos(angle) * radius} ${100 + Math.sin(angle) * radius}`;
+            }).join(" ")} Z`}
+          />
+          {hueNodes.map((node, index) => {
+            const angle = (node.hue + node.hueShift) * Math.PI / 180;
+            const radius = 58 * (1 + node.saturation / 100);
+            return (
+              <circle
+                key={node.hue}
+                cx={100 + Math.cos(angle) * radius}
+                cy={100 + Math.sin(angle) * radius}
+                r={selectedHue === index ? 6 : 4.5}
+                className={`plane-node ${selectedHue === index ? "selected" : ""}`}
+                style={{ color: `hsl(${node.hue} 92% 66%)` }}
+                onPointerDown={(event) => {
+                  if (disabled) return;
+                  event.preventDefault();
+                  event.currentTarget.ownerSVGElement.setPointerCapture?.(event.pointerId);
+                  dragState.current = {
+                    kind: "hue",
+                    index,
+                    element: event.currentTarget.ownerSVGElement,
+                  };
+                  setSelectedHue(index);
+                  onInteractionChange?.(true);
+                }}
+              />
+            );
+          })}
+        </svg>
+      </div>
+      <div className="plane-readout">
+        <span><i style={{ background: `hsl(${selected.hue} 92% 66%)` }} />{Math.round(selected.hue)}° 色域</span>
+        <b>色相 {selected.hueShift > 0 ? "+" : ""}{Math.round(selected.hueShift)}°</b>
+        <b>饱和 {selected.saturation > 0 ? "+" : ""}{Math.round(selected.saturation)}</b>
+      </div>
+      <div className="cl-plane">
+        <div className="cl-plane-title"><strong>C/L 明度层</strong><span>黑位 · 暗部 · 中间调 · 高光 · 白位</span></div>
+        <svg
+          viewBox="0 0 200 110"
+          data-height="110"
+          aria-label="C/L 明度曲线"
+          onPointerMove={updateLuminanceNode}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+        >
+          <line x1="20" y1="55" x2="180" y2="55" className="cl-baseline" />
+          <path d={smoothPolylinePath(luminancePoints)} className="cl-curve" />
+          {luminancePoints.map(([x, y], index) => (
+            <circle
+              key={draft.luminance[index].level}
+              cx={x}
+              cy={y}
+              r="5"
+              className="cl-node"
+              onPointerDown={(event) => {
+                if (disabled) return;
+                event.preventDefault();
+                event.currentTarget.ownerSVGElement.setPointerCapture?.(event.pointerId);
+                dragState.current = {
+                  kind: "luminance",
+                  index,
+                  element: event.currentTarget.ownerSVGElement,
+                };
+                onInteractionChange?.(true);
+              }}
+            />
+          ))}
+        </svg>
+      </div>
+      <Range
+        label="联动平滑"
+        value={draft.smoothness}
+        min={10}
+        max={100}
+        signed={false}
+        defaultValue={68}
+        disabled={disabled}
+        onPreview={(smoothness) => publish({ ...draftRef.current, smoothness })}
+        onInteractionChange={onInteractionChange}
+        onChange={(smoothness) => publish({ ...draftRef.current, smoothness }, true)}
+      />
+      <Range
+        label="中性色保护"
+        value={draft.neutralProtection}
+        min={0}
+        max={100}
+        signed={false}
+        defaultValue={72}
+        disabled={disabled}
+        onPreview={(neutralProtection) => publish({ ...draftRef.current, neutralProtection })}
+        onInteractionChange={onInteractionChange}
+        onChange={(neutralProtection) => publish({ ...draftRef.current, neutralProtection }, true)}
+      />
+    </InspectorDisclosure>
+  );
+}
+
 function StyleAnalysis({ profile }) {
   if (!profile) {
     return (
@@ -1433,7 +1696,7 @@ function StyleAnalysis({ profile }) {
 function styleAnalysisMeta(profile) {
   if (!profile) return "等待样片";
   if (profile.version < 2 || !profile.tone) return "兼容模式";
-  if (profile.semantic) return "语义区域 v4.3";
+  if (profile.semantic) return "语义区域 v5";
   return profile.version >= 3 ? "分区感知 v3" : "感知分析 v2";
 }
 
@@ -1494,6 +1757,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const stagePreviewGesture = useRef(null);
   const styledBase = useRef(null);
   const styledPreviewBase = useRef(null);
+  const colorPlanePreviewBase = useRef(null);
   const curveAdjustedPreviewBase = useRef(null);
   const styledOutput = useRef(null);
   const curvePreviewOutput = useRef(null);
@@ -1852,7 +2116,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
     photoId = active?.id,
   ) {
     const key = JSON.stringify({
-      engine: "4.3-ab-cl-grid",
+      engine: "5.0-oklab-color-plane",
       source: profileFingerprint(source),
       reference: profileFingerprint(reference),
       strength: renderSettings.strength,
@@ -1871,6 +2135,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
           saturation: renderSettings.saturation,
           dehaze: renderSettings.dehaze,
           curves: renderSettings.curves,
+          colorPlane: renderSettings.colorPlane,
         }
         : false,
     });
@@ -1903,8 +2168,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
     return {
       id: crypto.randomUUID(),
       name,
-      formatVersion: 4,
-      stats: { ...referenceStats, version: 4 },
+      formatVersion: 5,
+      stats: { ...referenceStats, version: Math.max(4, referenceStats?.version || 0) },
       luts,
       settings: active ? settings : null,
       palette: makePalette(referenceStats),
@@ -1943,6 +2208,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
     if (item.settings && active) {
       updateActiveSettings({
         ...item.settings,
+        colorPlane: normalizeColorPlaneSettings(item.settings.colorPlane),
         curves: item.settings.curves || structuredClone(DEFAULT_CURVES),
         preset: "custom",
       });
@@ -2471,6 +2737,19 @@ export function App({ onLogout, session, username = "本机用户" }) {
     );
   }
 
+  function previewColorPlane(previewSettings) {
+    const base = colorPlanePreviewBase.current || styledPreviewBase.current || styledBase.current;
+    const canvas = styledCanvas.current;
+    if (!base || base.photoId !== active?.id || !canvas) return;
+    renderAdjustedBase(
+      base,
+      previewSettings,
+      settings.curves,
+      canvas,
+      curvePreviewOutput,
+    );
+  }
+
   function handleBasicInteraction(activeInteraction) {
     setBasicDragging(activeInteraction);
     // If the comparison divider was left at the original-only edge, every
@@ -2487,6 +2766,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
       canvasPhotoIdRef.current = photoId;
       styledBase.current = null;
       styledPreviewBase.current = null;
+      colorPlanePreviewBase.current = null;
       curveAdjustedPreviewBase.current = null;
       styledOutput.current = null;
       curvePreviewOutput.current = null;
@@ -2558,6 +2838,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
         };
         styledBase.current = base;
         styledPreviewBase.current = makeCurvePreviewBase(base);
+        colorPlanePreviewBase.current = makeCurvePreviewBase(base, IS_MOBILE ? 280 : 360);
         curveAdjustedPreviewBase.current = null;
         styledOutput.current = null;
         curvePreviewOutput.current = null;
@@ -2689,6 +2970,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
     settings.grainRoughness,
     settings.grainColor,
     settings.grainHighlights,
+    settings.colorPlane,
     settings.curves,
     basicDragging,
     curveDragging,
@@ -2887,7 +3169,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   return (
     <main className="app-shell editor-shell">
       <header className="topbar">
-        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 4.3</small></div>
+        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 5</small></div>
         <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
         <div className="header-actions">
           <GlassButton
@@ -3140,12 +3422,12 @@ export function App({ onLogout, session, username = "本机用户" }) {
               <span>风格强度</span>
               <small className={processing || curveDragging || basicDragging ? "engine-status active" : "engine-status"}>
                 {processing
-                  ? "正在构建 V4 颜色与质感…"
+                  ? "正在构建 V5 颜色与质感…"
                   : curveDragging
                     ? "曲线实时预览"
                     : basicDragging
                       ? "基本参数实时预览"
-                      : `${activeBackend} · V4 本地渲染`}
+                      : `${activeBackend} · V5 本地渲染`}
               </small>
               <strong>{settings.strength}%</strong>
             </div>
@@ -3226,6 +3508,13 @@ export function App({ onLogout, session, username = "本机用户" }) {
             disabled={!active}
             onChange={updateActiveSettings}
             onPreview={previewBasic}
+            onInteractionChange={handleBasicInteraction}
+          />
+          <ColorPlaneEditor
+            settings={settings}
+            disabled={!active}
+            onChange={updateActiveSettings}
+            onPreview={previewColorPlane}
             onInteractionChange={handleBasicInteraction}
           />
           <InspectorDisclosure
@@ -3445,7 +3734,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
         <div className="modal-backdrop" onMouseDown={() => setStyleDialogOpen(false)}>
           <section className="modal glass-panel" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-title"><div><Sparkle size={18} /><h2>保存参考风格</h2></div><GlassButton className="mini-button" onClick={() => setStyleDialogOpen(false)}><X size={14} /></GlassButton></div>
-            <p>V4 全局与局部 LUT、语义区域、光线、质感和参数会先写入本机 IndexedDB；云端账户会同步完整风格，供其他设备调用。</p>
+            <p>V5 全局与局部 LUT、A/B 色彩平面、C/L 明度层、语义区域、光线、质感和参数会先写入本机 IndexedDB；云端账户会同步完整风格，供其他设备调用。</p>
             <label className="field-label">滤镜名称<input autoFocus value={styleName} placeholder="例如：加州暖阳" onChange={(event) => setStyleName(event.target.value)} /></label>
             <div className="dialog-actions"><GlassButton onClick={() => setStyleDialogOpen(false)}>取消</GlassButton><button className="primary-button" disabled={!styleName.trim()} onClick={saveReferenceStyle}>保存滤镜</button></div>
           </section>
@@ -3656,7 +3945,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               <div>
                 <span className="preset-export-badge">DIRECT PRESET EXPORT</span>
                 <strong>带走这套颜色，在专业软件继续编辑</strong>
-                <p>XMP 可用于 Lightroom / Camera Raw；33³ CUBE LUT 可用于 Photoshop、DaVinci Resolve 等支持 LUT 的软件；CLSTYLE 保留完整 V4.3 语义风格。</p>
+                <p>XMP 可用于 Lightroom / Camera Raw；33³ CUBE LUT 会写入 V5 全局色彩平面与明度层，可用于 Photoshop、DaVinci Resolve 等支持 LUT 的软件；CLSTYLE 保留完整 V5 语义与局部风格。</p>
                 <small>标准 CUBE 无法包含语义局部调整、质感和随机颗粒。</small>
               </div>
               <div>

@@ -91,6 +91,14 @@ assert.ok(restored.luts.global.data instanceof Float32Array);
 assert.equal(restored.luts.global.data.length, constrained.data.length);
 assert.equal(restored.luts.residuals.skin.size, 17);
 
+const legacyStyle = deserializeClstyle(JSON.stringify({
+  format: "com.colorlab.clstyle",
+  schemaVersion: 4,
+  engine: "Color Engine 4.3",
+  style: { id: "legacy-v4", name: "Legacy", stats: { version: 4 } },
+}));
+assert.equal(legacyStyle.id, "legacy-v4", "V4 CLSTYLE compatibility was lost");
+
 console.log("3D LUT verification passed", {
   maximumIdentityError,
   cubeError,
