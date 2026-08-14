@@ -2579,6 +2579,17 @@ export function App({ onLogout, session, username = "本机用户" }) {
     }
   }
 
+  function openTargetPicker(event) {
+    event?.stopPropagation();
+    targetInput.current?.click();
+  }
+
+  function handleTargetInputChange(event) {
+    const files = Array.from(event.currentTarget.files || []);
+    event.currentTarget.value = "";
+    if (files.length) void addTargets(files);
+  }
+
   async function loadDemo() {
     setAnalyzing(true);
     setBusyTask({ kind: "analysis", label: "正在分析示例照片", progress: 5 });
@@ -2993,7 +3004,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   }
 
   function beginStageInteraction(event) {
-    if (event.button !== 0) return;
+    if (!active || event.button !== 0) return;
     stagePointer.current = {
       x: event.clientX,
       y: event.clientY,
@@ -3290,6 +3301,15 @@ export function App({ onLogout, session, username = "本机用户" }) {
       )}
 
       <section className="workspace">
+        <input
+          ref={targetInput}
+          data-testid="target-photo-input"
+          hidden
+          multiple
+          type="file"
+          accept={IMAGE_ACCEPT}
+          onChange={handleTargetInputChange}
+        />
         <aside className="left-panel glass-panel">
           <div className="panel-heading"><span>参考风格</span><GlassButton className="mini-button" onClick={() => referenceInput.current?.click()}><Plus size={15} /></GlassButton></div>
           <input ref={referenceInput} hidden multiple type="file" accept={IMAGE_ACCEPT} onChange={(event) => addReferences(event.target.files)} />
@@ -3408,7 +3428,13 @@ export function App({ onLogout, session, username = "本机用户" }) {
                 )}
               </>
             ) : (
-              <button className="empty-canvas" onClick={() => targetInput.current?.click()}>
+              <button
+                type="button"
+                className="empty-canvas"
+                data-testid="empty-target-upload"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={openTargetPicker}
+              >
                 <span className="empty-icon"><ImageSquare size={31} /></span>
                 <strong>上传需要调色的照片</strong>
                 <span>支持一次选择多张，每张保留独立参数</span>
@@ -3451,8 +3477,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               )}
             </div>
             <div className="target-scroller">
-              <button className="add-target" onClick={() => targetInput.current?.click()}><Plus size={24} /><span>添加照片</span></button>
-              <input ref={targetInput} hidden multiple type="file" accept={IMAGE_ACCEPT} onChange={(event) => addTargets(event.target.files)} />
+              <button type="button" className="add-target" onClick={openTargetPicker}><Plus size={24} /><span>添加照片</span></button>
               {targets.map((item) => (
                 <figure
                   key={item.id}

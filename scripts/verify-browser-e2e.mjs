@@ -245,6 +245,40 @@ try {
   await delay(80);
   await evaluate(cdp, "document.querySelector('[data-testid=\"auth-submit\"]').click()");
   await waitFor(cdp, "document.readyState === 'complete' && document.querySelector('.demo-button')");
+
+  // Desktop pointer capture on the empty photo stage must not swallow the
+  // central upload button's click before a target photo exists.
+  const emptyUploadPoint = await evaluate(cdp, `(() => {
+    const input = document.querySelector('[data-testid="target-photo-input"]');
+    input.addEventListener('click', (event) => {
+      event.preventDefault();
+      window.__targetPhotoPickerOpened = (window.__targetPhotoPickerOpened || 0) + 1;
+    }, { once: true });
+    const rect = document.querySelector('[data-testid="empty-target-upload"] b').getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: emptyUploadPoint.x,
+    y: emptyUploadPoint.y,
+    button: "left",
+    clickCount: 1,
+  });
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: emptyUploadPoint.x,
+    y: emptyUploadPoint.y,
+    button: "left",
+    clickCount: 1,
+  });
+  await waitFor(cdp, "window.__targetPhotoPickerOpened === 1");
+  const emptyUploadState = await evaluate(cdp, `(() => ({
+    pickerOpened: window.__targetPhotoPickerOpened,
+    previewOpened: Boolean(document.querySelector('.stage-preview-modal')),
+  }))()`);
+  assert(emptyUploadState.pickerOpened === 1, "Desktop central upload button did not open the target picker");
+  assert(!emptyUploadState.previewOpened, "Empty photo stage opened the detail viewer instead of the target picker");
+
   await evaluate(cdp, "document.querySelector('.demo-button').click()");
   await waitFor(
     cdp,
