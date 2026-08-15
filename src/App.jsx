@@ -2797,6 +2797,32 @@ export function App({ onLogout, session, username = "本机用户" }) {
         styledCanvas.current.dataset.photoId = photoId;
         const imageData = originalContext.getImageData(0, 0, originalCanvas.current.width, originalCanvas.current.height);
         const data = imageData.data;
+        const commitBase = (pixels) => {
+          const base = {
+            data: new Uint8ClampedArray(pixels),
+            width: imageData.width,
+            height: imageData.height,
+            photoId,
+          };
+          styledBase.current = base;
+          styledPreviewBase.current = makeCurvePreviewBase(base);
+          colorPlanePreviewBase.current = makeCurvePreviewBase(base, IS_MOBILE ? 280 : 360);
+          curveAdjustedPreviewBase.current = null;
+          styledOutput.current = null;
+          curvePreviewOutput.current = null;
+          renderAdjustedBase(
+            styledPreviewBase.current || base,
+            settings,
+            settings.curves,
+            styledCanvas.current,
+            curvePreviewOutput,
+          );
+          setBaseRevision((value) => value + 1);
+        };
+        // Establish an adjustable base before semantic analysis and LUT
+        // construction. If an advanced pass fails for a particular image,
+        // Basic/curve controls remain usable instead of silently doing nothing.
+        commitBase(data);
         const maskKey = `${active.id}:${active.url}:${imageData.width}x${imageData.height}`;
         let semanticMasks = semanticMaskCache.current.get(maskKey);
         if (!semanticMasks) {
@@ -2841,32 +2867,19 @@ export function App({ onLogout, session, username = "本机用户" }) {
           settings.strength / 100,
         );
         if (cancelled || activePhotoIdRef.current !== photoId) return;
-        const base = {
-          data: new Uint8ClampedArray(data),
-          width: imageData.width,
-          height: imageData.height,
-          photoId,
-        };
-        styledBase.current = base;
-        styledPreviewBase.current = makeCurvePreviewBase(base);
-        colorPlanePreviewBase.current = makeCurvePreviewBase(base, IS_MOBILE ? 280 : 360);
-        curveAdjustedPreviewBase.current = null;
-        styledOutput.current = null;
-        curvePreviewOutput.current = null;
         // Reference-lighting and style-strength controls rebuild this base.
         // Paint it immediately so an active interaction never leaves a blank
         // or stale canvas while the asynchronous high-quality pass is paused.
-        renderAdjustedBase(
-          styledPreviewBase.current || base,
-          settings,
-          settings.curves,
-          styledCanvas.current,
-          curvePreviewOutput,
-        );
-        setBaseRevision((value) => value + 1);
+        commitBase(data);
         if (activePhotoIdRef.current === photoId) setProcessing(false);
-      }).catch(() => {
-        if (!cancelled && activePhotoIdRef.current === photoId) setProcessing(false);
+      }).catch((error) => {
+        if (!cancelled && activePhotoIdRef.current === photoId) {
+          setImportErrors((items) => [
+            `${active.name}：自动仿色未完成，已保留原图和手动调整。${error?.message || "未知渲染错误"}`,
+            ...items,
+          ].slice(0, 8));
+          setProcessing(false);
+        }
       });
     }, 42);
     return () => {
@@ -3312,7 +3325,15 @@ export function App({ onLogout, session, username = "本机用户" }) {
         />
         <aside className="left-panel glass-panel">
           <div className="panel-heading"><span>参考风格</span><GlassButton className="mini-button" onClick={() => referenceInput.current?.click()}><Plus size={15} /></GlassButton></div>
-          <input ref={referenceInput} hidden multiple type="file" accept={IMAGE_ACCEPT} onChange={(event) => addReferences(event.target.files)} />
+          <input
+            ref={referenceInput}
+            data-testid="reference-photo-input"
+            hidden
+            multiple
+            type="file"
+            accept={IMAGE_ACCEPT}
+            onChange={(event) => addReferences(event.target.files)}
+          />
           <div className="reference-list">
             {references.map((item) => (
               <figure

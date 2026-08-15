@@ -177,6 +177,41 @@ if (!resultData.every(Number.isFinite)) {
   throw new Error("Color engine emitted a non-finite channel value");
 }
 
+const foliageMask = {
+  version: 1,
+  model: "heuristic",
+  confidence: 0.9,
+  width: WIDTH,
+  height: HEIGHT,
+  masks: { foliage: new Float32Array(WIDTH * HEIGHT).fill(1) },
+  regions: { foliage: { confidence: 0.9, coverage: 1 } },
+};
+const semanticSource = analyzePixels(sourceData, {
+  width: WIDTH,
+  height: HEIGHT,
+  semanticMasks: foliageMask,
+});
+const semanticReference = analyzePixels(referenceData, {
+  width: WIDTH,
+  height: HEIGHT,
+  semanticMasks: foliageMask,
+});
+const semanticResultData = new Uint8ClampedArray(sourceData);
+applyStyleProfile(
+  semanticResultData,
+  semanticSource,
+  semanticReference,
+  neutralSettings,
+  [identityLut, identityLut, identityLut, identityLut],
+  { width: WIDTH, height: HEIGHT, semanticMasks: foliageMask },
+);
+if (!semanticResultData.every(Number.isFinite)) {
+  throw new Error("Semantic color transfer emitted a non-finite channel value");
+}
+if (semanticResultData.every((value, index) => value === sourceData[index])) {
+  throw new Error("Semantic color transfer did not modify any channel");
+}
+
 const neutralSourceData = makeNeutralImage();
 const neutralReferenceData = makeNeutralImage([-3, 0, 8]);
 const neutralSource = analyzePixels(neutralSourceData, { width: WIDTH, height: HEIGHT });

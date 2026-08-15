@@ -1283,6 +1283,10 @@ export function applyStyleProfile(
         const lookup = semantic.lookups;
         const factor = semantic.maskWeight * semantic.confidence * strength * 0.64;
         const semanticTone = semantic.toneLut[Math.round(originalLightness * 1023)];
+        const semanticToneIndex = Math.min(
+          lookup.toneBins - 1,
+          Math.round(originalLightness * (lookup.toneBins - 1)),
+        );
         lightness += (semanticTone - lightness) * factor * 0.34;
         a += (
           lookup.neutralA[semanticToneIndex]

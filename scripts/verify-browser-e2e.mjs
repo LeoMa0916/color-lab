@@ -13,6 +13,10 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const project = dirname(dirname(fileURLToPath(import.meta.url)));
+const importReferenceFixture = process.env.COLORLAB_REFERENCE_TEST_IMAGE
+  || join(project, "public", "demo", "coast-reference.png");
+const importTargetFixture = process.env.COLORLAB_TARGET_TEST_IMAGE
+  || join(project, "public", "demo", "coast-target.png");
 const previewPort = await new Promise((resolve, reject) => {
   const server = createServer();
   server.unref();
@@ -146,6 +150,19 @@ async function evaluate(cdp, expression) {
   return response.result.value;
 }
 
+async function canvasChecksum(cdp, selector = "canvas.styled") {
+  return evaluate(cdp, `(() => {
+    const canvas = document.querySelector(${JSON.stringify(selector)});
+    const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+    let sum = 0;
+    const stride = Math.max(4, Math.floor(data.length / 16000 / 4) * 4);
+    for (let index = 0; index < data.length; index += stride) {
+      sum = (sum + data[index] * 3 + data[index + 1] * 5 + data[index + 2] * 7) % 2147483647;
+    }
+    return sum;
+  })()`);
+}
+
 async function waitFor(cdp, expression, timeout = 60000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -153,6 +170,16 @@ async function waitFor(cdp, expression, timeout = 60000) {
     await delay(250);
   }
   throw new Error(`Timed out waiting for: ${expression}`);
+}
+
+async function setFileInputFiles(cdp, selector, files) {
+  const { root } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
+  const { nodeId } = await cdp.send("DOM.querySelector", {
+    nodeId: root.nodeId,
+    selector,
+  });
+  assert(nodeId, `File input not found: ${selector}`);
+  await cdp.send("DOM.setFileInputFiles", { nodeId, files });
 }
 
 const preview = spawn(process.execPath, [
@@ -196,6 +223,7 @@ try {
   });
   await Promise.all([
     cdp.send("Page.enable"),
+    cdp.send("DOM.enable"),
     cdp.send("Runtime.enable"),
     cdp.send("Log.enable"),
   ]);
@@ -278,6 +306,64 @@ try {
   }))()`);
   assert(emptyUploadState.pickerOpened === 1, "Desktop central upload button did not open the target picker");
   assert(!emptyUploadState.previewOpened, "Empty photo stage opened the detail viewer instead of the target picker");
+
+  // Exercise the production import path instead of relying only on the demo
+  // loader, then prove both automatic style transfer and inspector controls
+  // paint new pixels to the target canvas.
+  await setFileInputFiles(
+    cdp,
+    '[data-testid="reference-photo-input"]',
+    [importReferenceFixture],
+  );
+  await waitFor(
+    cdp,
+    "document.querySelectorAll('.reference-thumb').length === 1 && !document.querySelector('.global-progress')",
+    120000,
+  );
+  await setFileInputFiles(
+    cdp,
+    '[data-testid="target-photo-input"]',
+    [importTargetFixture],
+  );
+  await waitFor(
+    cdp,
+    "document.querySelectorAll('.target-thumb').length === 1 && document.querySelector('canvas.styled')?.width > 0 && !document.querySelector('.global-progress') && !document.querySelector('.engine-status.active')",
+    120000,
+  );
+  await delay(800);
+  const importCanvasChecksums = {
+    original: await canvasChecksum(cdp, "canvas.original"),
+    styled: await canvasChecksum(cdp),
+  };
+  assert(
+    importCanvasChecksums.original !== importCanvasChecksums.styled,
+    "Real file import did not produce a styled target preview",
+  );
+  const importedStyledBefore = importCanvasChecksums.styled;
+  await evaluate(cdp, `(() => {
+    const input = document.querySelector('input[aria-label="曝光度"]');
+    input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 19 }));
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '0.85');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await delay(220);
+  const importedStyledLive = await canvasChecksum(cdp);
+  assert(importedStyledLive !== importedStyledBefore, "Inspector adjustment did not update a real imported photo");
+  await evaluate(cdp, `document.querySelector('input[aria-label="曝光度"]')
+    .dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 19 }))`);
+  await delay(1200);
+  const importedStyledCommitted = await canvasChecksum(cdp);
+  assert(
+    importedStyledCommitted !== importedStyledBefore,
+    "Inspector adjustment reverted after rendering a real imported photo",
+  );
+  console.log("Real file import and inspector adjustment verification passed", {
+    automaticStyle: importCanvasChecksums,
+    inspector: { before: importedStyledBefore, live: importedStyledLive, committed: importedStyledCommitted },
+  });
+
+  await cdp.send("Page.reload", { ignoreCache: true });
+  await waitFor(cdp, "document.readyState === 'complete' && document.querySelector('.demo-button')");
 
   await evaluate(cdp, "document.querySelector('.demo-button').click()");
   await waitFor(
