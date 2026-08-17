@@ -9,6 +9,7 @@ import {
   applyGeometryTransform,
   cropForAspect,
   defaultGeometrySettings,
+  estimateUprightTransform,
   mapGeometryOutputPointToSource,
   sourceLongEdgeForCroppedOutput,
 } from "../src/geometryEngine.js";
@@ -83,6 +84,52 @@ assert.ok(
   Math.abs(transformedPoint.x - 0.25) > 0.01 || Math.abs(transformedPoint.y - 0.75) > 0.01,
   "geometry-aware pointer mapping should account for crop and perspective",
 );
+
+const cinematicCrop = cropForAspect("2.39:1", 6000, 4000, null);
+assert.ok(
+  Math.abs((6000 * cinematicCrop.width) / (4000 * cinematicCrop.height) - 2.39) < 0.002,
+  "custom decimal crop ratios should retain the requested output aspect",
+);
+
+const projectiveGeometry = {
+  ...defaultGeometrySettings(),
+  rotation: 6,
+  horizontal: 28,
+  vertical: -19,
+  transformAspect: 24,
+  scale: 112,
+};
+const projectiveLine = [0.2, 0.5, 0.8].map((x) =>
+  mapGeometryOutputPointToSource({ x, y: 0.42 }, projectiveGeometry));
+const cross = (projectiveLine[1].x - projectiveLine[0].x)
+  * (projectiveLine[2].y - projectiveLine[0].y)
+  - (projectiveLine[1].y - projectiveLine[0].y)
+  * (projectiveLine[2].x - projectiveLine[0].x);
+assert.ok(Math.abs(cross) < 1e-6, "projective transform should preserve straight lines");
+
+const aspectPoint = mapGeometryOutputPointToSource(
+  { x: 0.25, y: 0.5 },
+  { ...defaultGeometrySettings(), transformAspect: 55 },
+);
+assert.ok(Math.abs(aspectPoint.x - 0.25) > 0.02, "transform aspect must visibly change the mapped image");
+
+const constrainedGeometry = {
+  ...defaultGeometrySettings(),
+  rotation: 17,
+  horizontal: 24,
+  vertical: -18,
+  constrainCrop: true,
+};
+for (const point of [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }]) {
+  const mapped = mapGeometryOutputPointToSource(point, constrainedGeometry);
+  assert.ok(mapped.x >= -1e-4 && mapped.x <= 1.0001 && mapped.y >= -1e-4 && mapped.y <= 1.0001,
+    "constrain crop should keep transformed corners inside the source frame");
+}
+
+const upright = estimateUprightTransform(pixels, width, height, "full");
+assert.equal(upright.upright, "full");
+assert.ok([upright.rotation, upright.horizontal, upright.vertical].every(Number.isFinite),
+  "Upright analysis should always return finite manual controls");
 
 const fourKSourceEdge = sourceLongEdgeForCroppedOutput(
   3840,

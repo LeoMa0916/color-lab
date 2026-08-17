@@ -715,13 +715,23 @@ try {
   const maskBefore = await evaluate(cdp, checksumExpression);
   await evaluate(cdp, `(() => {
     const input = document.querySelector('.masking-section input[aria-label="曝光度"]');
+    input.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 19 }));
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '1.25');
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);
+  await delay(180);
+  const maskLive = await evaluate(cdp, `(() => ({
+    checksum: ${checksumExpression},
+    overlayWidth: document.querySelector('.photo-edit-overlay').width,
+  }))()`);
+  assert(maskBefore !== maskLive.checksum, "Local radial mask exposure did not update during slider input");
+  assert(maskLive.overlayWidth === 1, "Red mask overlay should hide while local adjustments are being previewed");
+  await evaluate(cdp, `document.querySelector('.masking-section input[aria-label="曝光度"]')
+    .dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 19 }))`);
   await delay(1200);
   const maskAfter = await evaluate(cdp, checksumExpression);
-  assert(maskBefore !== maskAfter, "Local radial mask exposure did not update the preview pixels");
+  assert(maskBefore !== maskAfter, "Local radial mask exposure reverted after the final render");
+  await waitFor(cdp, "document.querySelector('.photo-edit-overlay').width > 1");
   await waitFor(cdp, "document.querySelector('.photo-stage.editing-mask')");
   const maskStage = await evaluate(cdp, `(() => {
     const rect = document.querySelector('.photo-stage').getBoundingClientRect();
@@ -744,6 +754,29 @@ try {
   await evaluate(cdp, "document.querySelector('.geometry-section .inspector-disclosure-toggle').click()");
   await waitFor(cdp, "document.querySelector('.geometry-section .aspect-presets')");
   await evaluate(cdp, `(() => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const wide = document.querySelector('input[aria-label="自定义裁切宽度"]');
+    const tall = document.querySelector('input[aria-label="自定义裁切高度"]');
+    setter.call(wide, '2.39');
+    wide.dispatchEvent(new Event('input', { bubbles: true }));
+    setter.call(tall, '1');
+    tall.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await waitFor(cdp, "document.querySelector('input[aria-label=\"自定义裁切宽度\"]').value === '2.39'");
+  await evaluate(cdp, "document.querySelector('.custom-aspect-editor button').click()");
+  await waitFor(cdp, "localStorage.getItem('color-lab-custom-crop-ratios-v1')?.includes('2.39:1')");
+  await waitFor(cdp, "Math.abs(document.querySelector('canvas.styled').width / document.querySelector('canvas.styled').height - 2.39) < 0.02");
+  const customRatioState = await evaluate(cdp, `(() => {
+    const canvas = document.querySelector('canvas.styled');
+    return {
+      ratio: canvas.width / canvas.height,
+      saved: [...document.querySelectorAll('.saved-aspect-presets span')]
+        .some((item) => item.textContent.includes('2.39:1')),
+    };
+  })()`);
+  assert(Math.abs(customRatioState.ratio - 2.39) < 0.02, "Custom crop ratio did not change the rendered frame");
+  assert(customRatioState.saved, "Custom crop ratio was not retained in the inspector");
+  await evaluate(cdp, `(() => {
     [...document.querySelectorAll('.geometry-section .aspect-presets button')]
       .find((button) => button.textContent.trim() === '1:1').click();
   })()`);
@@ -753,6 +786,14 @@ try {
     return { width: canvas.width, height: canvas.height };
   })()`);
   assert(geometryState.width === geometryState.height, "1:1 crop did not change the rendered frame dimensions");
+  await verifyContinuousRange("长宽比", 36);
+  await evaluate(cdp, `(() => {
+    [...document.querySelectorAll('.upright-presets button')]
+      .find((button) => button.textContent.trim() === '水平').click();
+  })()`);
+  await waitFor(cdp, "[...document.querySelectorAll('.upright-presets button')].find((button) => button.textContent.trim() === '水平')?.classList.contains('active')");
+  const constrainCropChecked = await evaluate(cdp, "document.querySelector('.constrain-crop-toggle input').checked");
+  assert(constrainCropChecked, "Constrain crop should be enabled by default");
   await evaluate(cdp, "document.querySelector('.geometry-tool-heading button:first-child').click()");
   await waitFor(cdp, "document.querySelector('.photo-stage.editing-crop')");
   const cropStage = await evaluate(cdp, `(() => {
@@ -779,7 +820,13 @@ try {
   assert(Math.abs(splitAfterCrop - splitBeforeMask) < 0.01, "Crop tool did not restore the comparison split");
   await evaluate(cdp, "document.querySelector('.geometry-tool-heading button:last-child').click()");
   await delay(900);
-  console.log("Mask and crop browser verification passed", { maskBefore, maskAfter, brushState, geometryState });
+  console.log("Mask and crop browser verification passed", {
+    maskBefore,
+    maskAfter,
+    brushState,
+    geometryState,
+    customRatioState,
+  });
 
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 390,

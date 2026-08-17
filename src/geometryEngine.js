@@ -5,12 +5,15 @@ export function defaultGeometrySettings() {
   return {
     aspect: "original",
     crop: { x: 0, y: 0, width: 1, height: 1 },
+    upright: "off",
     rotation: 0,
     horizontal: 0,
     vertical: 0,
+    transformAspect: 0,
     scale: 100,
     offsetX: 0,
     offsetY: 0,
+    constrainCrop: true,
   };
 }
 
@@ -31,9 +34,11 @@ export function normalizeGeometrySettings(settings) {
     rotation: clamp(settings?.rotation, -45, 45),
     horizontal: clamp(settings?.horizontal, -100, 100),
     vertical: clamp(settings?.vertical, -100, 100),
+    transformAspect: clamp(settings?.transformAspect, -100, 100),
     scale: clamp(settings?.scale ?? 100, 100, 200),
     offsetX: clamp(settings?.offsetX, -100, 100),
     offsetY: clamp(settings?.offsetY, -100, 100),
+    constrainCrop: settings?.constrainCrop !== false,
   };
 }
 
@@ -45,6 +50,7 @@ export function hasGeometryAdjustments(settings) {
     || Math.abs(value.rotation) > 0.001
     || Math.abs(value.horizontal) > 0.001
     || Math.abs(value.vertical) > 0.001
+    || Math.abs(value.transformAspect) > 0.001
     || Math.abs(value.scale - 100) > 0.001
     || Math.abs(value.offsetX) > 0.001
     || Math.abs(value.offsetY) > 0.001;
@@ -69,34 +75,78 @@ function bilinear(data, width, height, x, y, channel, edgeMode) {
   return top * (1 - ty) + bottom * ty;
 }
 
-function mapNormalizedGeometryOutputPointToSource(point, geometry) {
+function geometryCoefficients(geometry, autoScale = 1) {
   const radians = -geometry.rotation * Math.PI / 180;
-  const cosine = Math.cos(radians);
-  const sine = Math.sin(radians);
-  const rotationGuard = 1 + Math.abs(Math.sin(geometry.rotation * Math.PI / 180)) * 0.36;
-  const scale = geometry.scale / 100 * rotationGuard;
-  const horizontal = geometry.horizontal / 100 * 0.34;
-  const vertical = geometry.vertical / 100 * 0.34;
-  const offsetX = geometry.offsetX / 400;
-  const offsetY = geometry.offsetY / 400;
+  return {
+    cosine: Math.cos(radians),
+    sine: Math.sin(radians),
+    scale: geometry.scale / 100 * autoScale,
+    horizontal: geometry.horizontal / 100 * 0.42,
+    vertical: geometry.vertical / 100 * 0.42,
+    aspectScale: Math.exp(geometry.transformAspect / 100 * Math.log(1.5)),
+    offsetX: geometry.offsetX / 200,
+    offsetY: geometry.offsetY / 200,
+  };
+}
+
+function mapNormalizedGeometryOutputPointToSource(point, geometry, autoScale = 1, prepared = null) {
+  const coefficients = prepared || geometryCoefficients(geometry, autoScale);
   let nx = (point.x - 0.5) * 2;
   let ny = (point.y - 0.5) * 2;
-  nx = nx / scale - offsetX;
-  ny = ny / scale - offsetY;
-  const rotatedX = nx * cosine - ny * sine;
-  const rotatedY = nx * sine + ny * cosine;
-  const denominatorX = Math.max(0.42, 1 + vertical * rotatedY);
-  const denominatorY = Math.max(0.42, 1 + horizontal * rotatedX);
-  const warpedX = rotatedX / denominatorX + horizontal * rotatedY;
-  const warpedY = rotatedY / denominatorY + vertical * rotatedX;
+  nx = nx / (coefficients.scale * coefficients.aspectScale) - coefficients.offsetX;
+  ny = ny / coefficients.scale - coefficients.offsetY;
+  const rotatedX = nx * coefficients.cosine - ny * coefficients.sine;
+  const rotatedY = nx * coefficients.sine + ny * coefficients.cosine;
+  // Lightroom-style manual transform is a single projective plane. Keeping
+  // one homogeneous denominator preserves straight lines and avoids the
+  // rubber-sheet distortion caused by independent X/Y denominators.
+  const denominator = Math.max(
+    0.28,
+    1 + coefficients.horizontal * rotatedX + coefficients.vertical * rotatedY,
+  );
+  const warpedX = rotatedX / denominator;
+  const warpedY = rotatedY / denominator;
   return {
     x: geometry.crop.x + (warpedX * 0.5 + 0.5) * geometry.crop.width,
     y: geometry.crop.y + (warpedY * 0.5 + 0.5) * geometry.crop.height,
   };
 }
 
+function geometryAutoScale(geometry) {
+  if (!geometry.constrainCrop) return 1;
+  const border = [];
+  const samples = 24;
+  for (let index = 0; index <= samples; index += 1) {
+    const position = index / samples;
+    border.push(
+      { x: position, y: 0 },
+      { x: position, y: 1 },
+      { x: 0, y: position },
+      { x: 1, y: position },
+    );
+  }
+  const inside = (scale) => border.every((point) => {
+    const source = mapNormalizedGeometryOutputPointToSource(point, geometry, scale);
+    return source.x >= geometry.crop.x - 1e-5
+      && source.x <= geometry.crop.x + geometry.crop.width + 1e-5
+      && source.y >= geometry.crop.y - 1e-5
+      && source.y <= geometry.crop.y + geometry.crop.height + 1e-5;
+  });
+  if (inside(1)) return 1;
+  let low = 1;
+  let high = 4;
+  if (!inside(high)) return high;
+  for (let iteration = 0; iteration < 18; iteration += 1) {
+    const middle = (low + high) / 2;
+    if (inside(middle)) high = middle;
+    else low = middle;
+  }
+  return high;
+}
+
 export function mapGeometryOutputPointToSource(point, settings) {
-  return mapNormalizedGeometryOutputPointToSource(point, normalizeGeometrySettings(settings));
+  const geometry = normalizeGeometrySettings(settings);
+  return mapNormalizedGeometryOutputPointToSource(point, geometry, geometryAutoScale(geometry));
 }
 
 export function applyGeometryTransform(data, width, height, settings, options = {}) {
@@ -107,12 +157,14 @@ export function applyGeometryTransform(data, width, height, settings, options = 
   const outputHeight = Math.max(1, Math.round(height * crop.height));
   const output = new Uint8ClampedArray(outputWidth * outputHeight * 4);
   const edgeMode = options.edgeMode || "clamp";
+  const autoScale = geometryAutoScale(geometry);
+  const coefficients = geometryCoefficients(geometry, autoScale);
   for (let y = 0; y < outputHeight; y += 1) {
     for (let x = 0; x < outputWidth; x += 1) {
       const source = mapNormalizedGeometryOutputPointToSource({
         x: (x + 0.5) / outputWidth,
         y: (y + 0.5) / outputHeight,
-      }, geometry);
+      }, geometry, autoScale, coefficients);
       const sourceX = source.x * width - 0.5;
       const sourceY = source.y * height - 0.5;
       const outputIndex = (y * outputWidth + x) * 4;
@@ -123,6 +175,71 @@ export function applyGeometryTransform(data, width, height, settings, options = 
     }
   }
   return { data: output, width: outputWidth, height: outputHeight };
+}
+
+function normalizeAngle(angle) {
+  let value = angle;
+  while (value > 90) value -= 180;
+  while (value <= -90) value += 180;
+  return value;
+}
+
+function weightedMean(samples) {
+  const weight = samples.reduce((sum, sample) => sum + sample.weight, 0);
+  if (!weight) return 0;
+  return samples.reduce((sum, sample) => sum + sample.value * sample.weight, 0) / weight;
+}
+
+/**
+ * Conservative, local-only Upright estimate. It measures dominant structural
+ * edges and returns Lightroom-compatible manual controls instead of baking a
+ * second transform into the pixels. The result can therefore be refined with
+ * the sliders and exported consistently.
+ */
+export function estimateUprightTransform(data, width, height, mode = "auto") {
+  if (!data || width < 8 || height < 8 || mode === "off") {
+    return { upright: "off", rotation: 0, horizontal: 0, vertical: 0 };
+  }
+  const step = Math.max(1, Math.floor(Math.max(width, height) / 420));
+  const horizontalEdges = [];
+  const verticalEdges = [];
+  const luma = (x, y) => {
+    const index = (y * width + x) * 4;
+    return data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722;
+  };
+  for (let y = step; y < height - step; y += step) {
+    for (let x = step; x < width - step; x += step) {
+      const gx = luma(x + step, y) - luma(x - step, y);
+      const gy = luma(x, y + step) - luma(x, y - step);
+      const strength = Math.hypot(gx, gy);
+      if (strength < 22) continue;
+      const edgeAngle = normalizeAngle(Math.atan2(gy, gx) * 180 / Math.PI + 90);
+      const nx = x / width * 2 - 1;
+      const ny = y / height * 2 - 1;
+      if (Math.abs(edgeAngle) <= 28) {
+        horizontalEdges.push({ value: edgeAngle, position: ny, weight: strength });
+      } else if (Math.abs(edgeAngle) >= 62) {
+        const lean = edgeAngle > 0 ? edgeAngle - 90 : edgeAngle + 90;
+        verticalEdges.push({ value: lean, position: nx, weight: strength });
+      }
+    }
+  }
+  const rotation = clamp(-weightedMean(horizontalEdges), -12, 12);
+  const left = verticalEdges.filter((sample) => sample.position < -0.18);
+  const right = verticalEdges.filter((sample) => sample.position > 0.18);
+  const top = horizontalEdges.filter((sample) => sample.position < -0.18);
+  const bottom = horizontalEdges.filter((sample) => sample.position > 0.18);
+  const vertical = clamp((weightedMean(right) - weightedMean(left)) * 2.8, -55, 55);
+  const horizontal = clamp((weightedMean(bottom) - weightedMean(top)) * 2.2, -45, 45);
+  if (mode === "level") return { upright: mode, rotation, horizontal: 0, vertical: 0 };
+  if (mode === "vertical") return { upright: mode, rotation, horizontal: 0, vertical };
+  if (mode === "full") return { upright: mode, rotation, horizontal, vertical };
+  return {
+    upright: mode,
+    rotation,
+    horizontal: horizontal * 0.55,
+    vertical: vertical * 0.72,
+  };
 }
 
 export function sourceLongEdgeForCroppedOutput(outputLongEdge, imageWidth, imageHeight, settings) {

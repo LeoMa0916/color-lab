@@ -76,6 +76,7 @@ import {
   applyGeometryTransform,
   cropForAspect,
   defaultGeometrySettings,
+  estimateUprightTransform,
   mapGeometryOutputPointToSource,
   sourceLongEdgeForCroppedOutput,
 } from "./geometryEngine";
@@ -1140,6 +1141,7 @@ function Range({
     event.preventDefault();
     setEditValue(String(liveValueRef.current));
     setEditing(true);
+    onInteractionChange?.(true);
   }
 
   function commitEditing() {
@@ -1147,6 +1149,7 @@ function Range({
     const parsed = Number(editValue);
     setEditing(false);
     if (Number.isFinite(parsed)) commit(parsed);
+    onInteractionChange?.(false);
   }
 
   function resetToDefault() {
@@ -1194,6 +1197,7 @@ function Range({
             if (event.key === "Escape") {
               setEditing(false);
               setEditValue("");
+              onInteractionChange?.(false);
             }
           }}
         />
@@ -1788,6 +1792,8 @@ function MaskingPanel({
   activeMaskId,
   onActiveMaskChange,
   onChange,
+  onPreview,
+  onAdjustmentInteractionChange,
   activeTool,
   onToolChange,
   paintMode,
@@ -1806,6 +1812,14 @@ function MaskingPanel({
   });
   const updateLayer = (id, patch) => updateLayers(layers.map((layer) =>
     layer.id === id ? { ...layer, ...patch } : layer));
+  const settingsWithLayerPatch = (id, patch) => ({
+    ...settings,
+    masks: {
+      ...(settings.masks || {}),
+      layers: layers.map((layer) => layer.id === id ? { ...layer, ...patch } : layer),
+    },
+    preset: "custom",
+  });
   const addLayer = (type) => {
     const source = type === "linear"
       ? [{ type, mode: "add", start: { x: 0.2, y: 0.5 }, end: { x: 0.8, y: 0.5 } }]
@@ -1905,7 +1919,7 @@ function MaskingPanel({
               </div>
               <Range label="大小" value={brushSettings.size} min={1} max={100} signed={false} onChange={(size) => onBrushSettingsChange({ ...brushSettings, size })} />
               <Range label="羽化" value={brushSettings.feather} min={0} max={100} signed={false} onChange={(feather) => onBrushSettingsChange({ ...brushSettings, feather })} />
-              <p>在中间照片上拖动绘制；红色叠加表示当前选区。</p>
+              <p>在中间照片上拖动绘制；红色仅用于显示选区，调节局部参数时会自动隐藏。</p>
             </div>
           )}
           <div className="mask-local-adjustments">
@@ -1918,6 +1932,11 @@ function MaskingPanel({
                 max={max}
                 step={step}
                 decimals={decimals}
+                defaultValue={DEFAULT_MASK_ADJUSTMENTS[key]}
+                onPreview={(value) => onPreview?.(settingsWithLayerPatch(activeLayer.id, {
+                  adjustments: { ...activeLayer.adjustments, [key]: value },
+                }))}
+                onInteractionChange={onAdjustmentInteractionChange}
                 onChange={(value) => updateLayer(activeLayer.id, {
                   adjustments: { ...activeLayer.adjustments, [key]: value },
                 })}
@@ -1932,18 +1951,84 @@ function MaskingPanel({
   );
 }
 
-function GeometryPanel({ settings, disabled, onChange, activeTool, onToolChange, imageSize }) {
+const CUSTOM_CROP_RATIOS_KEY = "color-lab-custom-crop-ratios-v1";
+
+function loadCustomCropRatios() {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const value = JSON.parse(localStorage.getItem(CUSTOM_CROP_RATIOS_KEY) || "[]");
+    return Array.isArray(value)
+      ? value.filter((item) => /^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/.test(item)).slice(0, 8)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function GeometryPanel({
+  settings,
+  disabled,
+  onChange,
+  onPreview,
+  onInteractionChange,
+  onUpright,
+  activeTool,
+  onToolChange,
+  imageSize,
+}) {
   const geometry = settings.geometry || defaultGeometrySettings();
-  const update = (patch) => onChange({
+  const [customRatios, setCustomRatios] = useState(loadCustomCropRatios);
+  const [customWide, setCustomWide] = useState("3");
+  const [customTall, setCustomTall] = useState("2");
+  const settingsWithGeometry = (patch) => ({
+    ...settings,
     geometry: { ...geometry, ...patch },
     preset: "custom",
   });
+  const update = (patch) => onChange(settingsWithGeometry(patch));
+  const preview = (patch) => onPreview?.(settingsWithGeometry(patch));
   const setAspect = (aspect) => update({
     aspect,
     crop: cropForAspect(aspect, imageSize.width || 1, imageSize.height || 1, geometry.crop),
   });
+  const saveCustomAspect = () => {
+    const wide = clamp(Number(customWide), 0.1, 100);
+    const tall = clamp(Number(customTall), 0.1, 100);
+    if (!Number.isFinite(wide) || !Number.isFinite(tall) || !wide || !tall) return;
+    const formatPart = (value) => Number(value.toFixed(2)).toString();
+    const aspect = `${formatPart(wide)}:${formatPart(tall)}`;
+    const next = [aspect, ...customRatios.filter((item) => item !== aspect)].slice(0, 8);
+    setCustomRatios(next);
+    try {
+      localStorage.setItem(CUSTOM_CROP_RATIOS_KEY, JSON.stringify(next));
+    } catch {
+      // A private browsing quota should not block applying the ratio now.
+    }
+    setAspect(aspect);
+  };
+  const removeCustomAspect = (aspect) => {
+    const next = customRatios.filter((item) => item !== aspect);
+    setCustomRatios(next);
+    try {
+      localStorage.setItem(CUSTOM_CROP_RATIOS_KEY, JSON.stringify(next));
+    } catch {
+      // Keep the in-memory list usable even when storage is unavailable.
+    }
+  };
+  const rangeProps = (key, label, min, max, extra = {}) => ({
+    label,
+    value: geometry[key] ?? defaultGeometrySettings()[key],
+    min,
+    max,
+    disabled,
+    defaultValue: defaultGeometrySettings()[key],
+    onInteractionChange,
+    onPreview: (value) => preview({ [key]: value, upright: "custom" }),
+    onChange: (value) => update({ [key]: value, upright: "custom" }),
+    ...extra,
+  });
   return (
-    <InspectorDisclosure title="裁切与透视" meta="几何校正" className="geometry-section">
+    <InspectorDisclosure title="裁切与变换" meta="Lightroom 式几何校正" className="geometry-section">
       <div className="geometry-tool-heading">
         <button
           type="button"
@@ -1964,13 +2049,49 @@ function GeometryPanel({ settings, disabled, onChange, activeTool, onToolChange,
           </button>
         ))}
       </div>
-      <Range label="旋转" value={geometry.rotation || 0} min={-45} max={45} step={0.1} decimals={1} disabled={disabled} onChange={(rotation) => update({ rotation })} />
-      <Range label="垂直透视" value={geometry.vertical || 0} min={-100} max={100} disabled={disabled} onChange={(vertical) => update({ vertical })} />
-      <Range label="水平透视" value={geometry.horizontal || 0} min={-100} max={100} disabled={disabled} onChange={(horizontal) => update({ horizontal })} />
-      <Range label="缩放" value={geometry.scale || 100} min={100} max={200} signed={false} disabled={disabled} onChange={(scale) => update({ scale })} />
-      <Range label="水平偏移" value={geometry.offsetX || 0} min={-100} max={100} disabled={disabled} onChange={(offsetX) => update({ offsetX })} />
-      <Range label="垂直偏移" value={geometry.offsetY || 0} min={-100} max={100} disabled={disabled} onChange={(offsetY) => update({ offsetY })} />
-      <p className="geometry-help"><Move size={12} />裁切框可拖动和缩放；几何结果会同步用于原尺寸批量导出。</p>
+      <div className="custom-aspect-editor">
+        <span>自定义比例</span>
+        <input aria-label="自定义裁切宽度" type="number" min="0.1" max="100" step="0.1" value={customWide} onChange={(event) => setCustomWide(event.target.value)} />
+        <b>:</b>
+        <input aria-label="自定义裁切高度" type="number" min="0.1" max="100" step="0.1" value={customTall} onChange={(event) => setCustomTall(event.target.value)} />
+        <button type="button" disabled={disabled} onClick={saveCustomAspect}>应用并保存</button>
+      </div>
+      {!!customRatios.length && (
+        <div className="saved-aspect-presets" aria-label="已保存的自定义比例">
+          {customRatios.map((aspect) => (
+            <span key={aspect} className={geometry.aspect === aspect ? "active" : ""}>
+              <button type="button" disabled={disabled} onClick={() => setAspect(aspect)}>{aspect}</button>
+              <button type="button" aria-label={`删除比例 ${aspect}`} onClick={() => removeCustomAspect(aspect)}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="transform-heading"><span>Upright</span><small>自动校正</small></div>
+      <div className="upright-presets" role="group" aria-label="Upright 自动透视">
+        {[
+          ["off", "关闭"],
+          ["auto", "自动"],
+          ["level", "水平"],
+          ["vertical", "垂直"],
+          ["full", "完全"],
+        ].map(([mode, label]) => (
+          <button key={mode} type="button" className={geometry.upright === mode ? "active" : ""} disabled={disabled} onClick={() => onUpright(mode)}>{label}</button>
+        ))}
+      </div>
+      <div className="transform-heading"><span>变换</span><small>手动微调</small></div>
+      <Range {...rangeProps("vertical", "垂直", -100, 100)} />
+      <Range {...rangeProps("horizontal", "水平", -100, 100)} />
+      <Range {...rangeProps("rotation", "旋转", -45, 45, { step: 0.1, decimals: 1 })} />
+      <Range {...rangeProps("transformAspect", "长宽比", -100, 100)} />
+      <Range {...rangeProps("scale", "比例", 100, 200, { signed: false })} />
+      <Range {...rangeProps("offsetX", "X 轴偏移", -100, 100)} />
+      <Range {...rangeProps("offsetY", "Y 轴偏移", -100, 100)} />
+      <label className="constrain-crop-toggle">
+        <input type="checkbox" checked={geometry.constrainCrop !== false} disabled={disabled} onChange={(event) => update({ constrainCrop: event.target.checked })} />
+        <span>约束裁切</span>
+        <small>自动放大，避免变换后出现空白边缘</small>
+      </label>
+      <p className="geometry-help"><Move size={12} />保持直线的投影变换会同步用于预览、蒙版定位和原尺寸批量导出。</p>
     </InspectorDisclosure>
   );
 }
@@ -1991,6 +2112,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const [maskPaintMode, setMaskPaintMode] = useState("add");
   const [maskBrushSettings, setMaskBrushSettings] = useState({ size: 18, feather: 70, flow: 100 });
   const [maskOverlayVisible, setMaskOverlayVisible] = useState(true);
+  const [maskAdjustmentActive, setMaskAdjustmentActive] = useState(false);
   const [dragImportActive, setDragImportActive] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [decodeStatus, setDecodeStatus] = useState("");
@@ -3105,6 +3227,27 @@ export function App({ onLogout, session, username = "本机用户" }) {
     if (activeInteraction && split < 12) setSplit(50);
   }
 
+  function handleMaskAdjustmentInteraction(activeInteraction) {
+    setMaskAdjustmentActive(activeInteraction);
+    handleBasicInteraction(activeInteraction);
+  }
+
+  function applyUpright(mode) {
+    if (!active) return;
+    const geometry = settings.geometry || defaultGeometrySettings();
+    const base = originalBase.current;
+    const estimated = mode === "off" || !base
+      ? { upright: "off", rotation: 0, horizontal: 0, vertical: 0 }
+      : estimateUprightTransform(base.data, base.width, base.height, mode);
+    const nextSettings = {
+      ...settings,
+      geometry: { ...geometry, ...estimated },
+      preset: "custom",
+    };
+    previewBasic(nextSettings);
+    updateActiveSettings(nextSettings);
+  }
+
   useEffect(() => {
     if (!active?.url || !originalCanvas.current || !styledCanvas.current) return;
     const photoId = active.id;
@@ -3436,7 +3579,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
       return;
     }
     const layer = settings.masks?.layers?.find((item) => item.id === activeMaskId);
-    if (activeTool !== "mask" || !maskOverlayVisible || !layer) {
+    if (activeTool !== "mask" || !maskOverlayVisible || maskAdjustmentActive || !layer) {
       context.clearRect(0, 0, canvas.width, canvas.height);
       canvas.width = 1;
       canvas.height = 1;
@@ -3456,7 +3599,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
       { edgeMode: "transparent" },
     );
     putFrameOnCanvas(frame, canvas);
-  }, [active?.id, activeTool, activeMaskId, maskOverlayVisible, settings.masks, settings.geometry, baseRevision]);
+  }, [active?.id, activeTool, activeMaskId, maskOverlayVisible, maskAdjustmentActive, settings.masks, settings.geometry, baseRevision]);
 
   useEffect(() => {
     const layers = settings.masks?.layers || [];
@@ -3467,6 +3610,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   function setEditingTool(tool) {
     if (tool && !activeTool) splitBeforeTool.current = split;
     setActiveTool(tool);
+    if (tool !== "mask") setMaskAdjustmentActive(false);
     if (tool) setSplit(100);
     else if (activeTool) setSplit(splitBeforeTool.current);
   }
@@ -4250,6 +4394,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
             activeMaskId={activeMaskId}
             onActiveMaskChange={setActiveMaskId}
             onChange={updateActiveSettings}
+            onPreview={previewBasic}
+            onAdjustmentInteractionChange={handleMaskAdjustmentInteraction}
             activeTool={activeTool}
             onToolChange={setEditingTool}
             paintMode={maskPaintMode}
@@ -4264,6 +4410,9 @@ export function App({ onLogout, session, username = "本机用户" }) {
             settings={settings}
             disabled={!active}
             onChange={updateActiveSettings}
+            onPreview={previewBasic}
+            onInteractionChange={handleBasicInteraction}
+            onUpright={applyUpright}
             activeTool={activeTool}
             onToolChange={setEditingTool}
             imageSize={{

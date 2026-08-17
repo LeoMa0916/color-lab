@@ -1365,6 +1365,9 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .mask-tool-grid button,
 .geometry-tool-heading button,
 .aspect-presets button,
+.upright-presets button,
+.custom-aspect-editor button,
+.saved-aspect-presets button,
 .mask-editor-toolbar button,
 .mask-mode-control button {
   min-width: 0;
@@ -1388,6 +1391,9 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .mask-tool-grid button:hover:not(:disabled),
 .geometry-tool-heading button:hover:not(:disabled),
 .aspect-presets button:hover:not(:disabled),
+.upright-presets button:hover:not(:disabled),
+.custom-aspect-editor button:hover:not(:disabled),
+.saved-aspect-presets button:hover:not(:disabled),
 .mask-editor-toolbar button:hover,
 .mask-mode-control button:hover { background: rgba(255,255,255,.075); color: #fff; }
 
@@ -1448,6 +1454,7 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .mask-editor-toolbar,
 .geometry-tool-heading,
 .aspect-presets,
+.upright-presets,
 .mask-mode-control {
   display: flex;
   align-items: center;
@@ -1469,6 +1476,7 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .mask-editor-toolbar button.active,
 .geometry-tool-heading button.active,
 .aspect-presets button.active,
+.upright-presets button.active,
 .mask-mode-control button.active {
   border-color: rgba(121,162,255,.42);
   color: #eef3ff;
@@ -1496,6 +1504,60 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .geometry-tool-heading button:first-child { flex: 1; }
 .aspect-presets { margin: 9px 0 6px; }
 .aspect-presets button { min-height: 30px; flex: 1; padding: 0 2px; border-radius: 9px; font-size: 8px; }
+.custom-aspect-editor {
+  display: grid;
+  grid-template-columns: auto minmax(0, 42px) 7px minmax(0, 42px) minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  margin: 7px 0 6px;
+  color: #8f96a2;
+  font-size: 8px;
+}
+.custom-aspect-editor input {
+  width: 100%;
+  min-height: 29px;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 8px;
+  color: #eef2f8;
+  background: rgba(255,255,255,.045);
+  font: inherit;
+  text-align: center;
+  outline: none;
+}
+.custom-aspect-editor input:focus { border-color: rgba(113,157,255,.7); box-shadow: 0 0 0 2px rgba(66,115,255,.14); }
+.custom-aspect-editor b { color: #69717d; text-align: center; }
+.custom-aspect-editor button { min-height: 29px; border-radius: 9px; font-size: 8px; }
+.saved-aspect-presets { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
+.saved-aspect-presets > span {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.09);
+  border-radius: 9px;
+  background: rgba(255,255,255,.03);
+}
+.saved-aspect-presets > span.active { border-color: rgba(121,162,255,.42); background: rgba(63,116,255,.16); }
+.saved-aspect-presets button { min-height: 27px; padding: 0 8px; border: 0; font-size: 8px; }
+.saved-aspect-presets button:last-child { width: 25px; padding: 0; color: #89919d; }
+.transform-heading { display: flex; align-items: baseline; justify-content: space-between; margin: 12px 0 7px; }
+.transform-heading span { color: #d8dce3; font-size: 9px; font-weight: 650; letter-spacing: .02em; }
+.transform-heading small { color: #68707c; font-size: 8px; }
+.upright-presets { margin-bottom: 8px; }
+.upright-presets button { min-height: 30px; flex: 1; padding: 0 2px; border-radius: 8px; font-size: 8px; }
+.constrain-crop-toggle {
+  display: grid;
+  grid-template-columns: 16px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+  padding: 9px 10px;
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: 11px;
+  color: #cbd0d8;
+  background: rgba(255,255,255,.025);
+  font-size: 9px;
+}
+.constrain-crop-toggle input { accent-color: #6f9aff; }
+.constrain-crop-toggle small { color: #717986; font-size: 8px; line-height: 1.35; }
 .geometry-help { display: flex; align-items: center; gap: 5px; margin-top: 8px; }
 
 @media (max-width: 720px) {
