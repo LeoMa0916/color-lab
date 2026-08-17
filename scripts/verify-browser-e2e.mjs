@@ -786,7 +786,11 @@ try {
     return { width: canvas.width, height: canvas.height };
   })()`);
   assert(geometryState.width === geometryState.height, "1:1 crop did not change the rendered frame dimensions");
+  await verifyContinuousRange("垂直", 34);
+  await verifyContinuousRange("水平", -27);
+  await verifyContinuousRange("旋转", 8.5);
   await verifyContinuousRange("长宽比", 36);
+  await verifyContinuousRange("比例", 124);
   await evaluate(cdp, `(() => {
     [...document.querySelectorAll('.upright-presets button')]
       .find((button) => button.textContent.trim() === '水平').click();

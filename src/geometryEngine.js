@@ -35,7 +35,7 @@ export function normalizeGeometrySettings(settings) {
     horizontal: clamp(settings?.horizontal, -100, 100),
     vertical: clamp(settings?.vertical, -100, 100),
     transformAspect: clamp(settings?.transformAspect, -100, 100),
-    scale: clamp(settings?.scale ?? 100, 100, 200),
+    scale: clamp(settings?.scale ?? 100, 50, 150),
     offsetX: clamp(settings?.offsetX, -100, 100),
     offsetY: clamp(settings?.offsetY, -100, 100),
     constrainCrop: settings?.constrainCrop !== false,
@@ -75,37 +75,82 @@ function bilinear(data, width, height, x, y, channel, edgeMode) {
   return top * (1 - ty) + bottom * ty;
 }
 
+function multiplyMatrix3(a, b) {
+  const result = new Array(9).fill(0);
+  for (let row = 0; row < 3; row += 1) {
+    for (let column = 0; column < 3; column += 1) {
+      for (let index = 0; index < 3; index += 1) {
+        result[row * 3 + column] += a[row * 3 + index] * b[index * 3 + column];
+      }
+    }
+  }
+  return result;
+}
+
+function invertMatrix3(matrix) {
+  const [a, b, c, d, e, f, g, h, i] = matrix;
+  const determinant = a * (e * i - f * h)
+    - b * (d * i - f * g)
+    + c * (d * h - e * g);
+  if (Math.abs(determinant) < 1e-8) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  const inverse = 1 / determinant;
+  return [
+    (e * i - f * h) * inverse,
+    (c * h - b * i) * inverse,
+    (b * f - c * e) * inverse,
+    (f * g - d * i) * inverse,
+    (a * i - c * g) * inverse,
+    (c * d - a * f) * inverse,
+    (d * h - e * g) * inverse,
+    (b * g - a * h) * inverse,
+    (a * e - b * d) * inverse,
+  ];
+}
+
 function geometryCoefficients(geometry, autoScale = 1) {
-  const radians = -geometry.rotation * Math.PI / 180;
+  const toRadians = Math.PI / 180;
+  const rotation = geometry.rotation * toRadians;
+  const horizontal = geometry.horizontal / 100 * 35 * toRadians;
+  const vertical = geometry.vertical / 100 * 35 * toRadians;
+  const cosX = Math.cos(vertical);
+  const sinX = Math.sin(vertical);
+  const cosY = Math.cos(horizontal);
+  const sinY = Math.sin(horizontal);
+  const cosZ = Math.cos(rotation);
+  const sinZ = Math.sin(rotation);
+  const rotateX = [1, 0, 0, 0, cosX, -sinX, 0, sinX, cosX];
+  const rotateY = [cosY, 0, sinY, 0, 1, 0, -sinY, 0, cosY];
+  const rotateZ = [cosZ, -sinZ, 0, sinZ, cosZ, 0, 0, 0, 1];
+  const rotationMatrix = multiplyMatrix3(rotateZ, multiplyMatrix3(rotateY, rotateX));
+  const focalLength = 2.15;
+  const forwardHomography = [
+    focalLength * rotationMatrix[0], focalLength * rotationMatrix[1], 0,
+    focalLength * rotationMatrix[3], focalLength * rotationMatrix[4], 0,
+    rotationMatrix[6], rotationMatrix[7], focalLength,
+  ];
   return {
-    cosine: Math.cos(radians),
-    sine: Math.sin(radians),
+    inverseHomography: invertMatrix3(forwardHomography),
     scale: geometry.scale / 100 * autoScale,
-    horizontal: geometry.horizontal / 100 * 0.42,
-    vertical: geometry.vertical / 100 * 0.42,
     aspectScale: Math.exp(geometry.transformAspect / 100 * Math.log(1.5)),
-    offsetX: geometry.offsetX / 200,
-    offsetY: geometry.offsetY / 200,
+    offsetX: geometry.offsetX / 100,
+    offsetY: geometry.offsetY / 100,
   };
 }
 
 function mapNormalizedGeometryOutputPointToSource(point, geometry, autoScale = 1, prepared = null) {
   const coefficients = prepared || geometryCoefficients(geometry, autoScale);
-  let nx = (point.x - 0.5) * 2;
-  let ny = (point.y - 0.5) * 2;
-  nx = nx / (coefficients.scale * coefficients.aspectScale) - coefficients.offsetX;
-  ny = ny / coefficients.scale - coefficients.offsetY;
-  const rotatedX = nx * coefficients.cosine - ny * coefficients.sine;
-  const rotatedY = nx * coefficients.sine + ny * coefficients.cosine;
-  // Lightroom-style manual transform is a single projective plane. Keeping
-  // one homogeneous denominator preserves straight lines and avoids the
-  // rubber-sheet distortion caused by independent X/Y denominators.
-  const denominator = Math.max(
-    0.28,
-    1 + coefficients.horizontal * rotatedX + coefficients.vertical * rotatedY,
-  );
-  const warpedX = rotatedX / denominator;
-  const warpedY = rotatedY / denominator;
+  const outputX = ((point.x - 0.5) * 2 - coefficients.offsetX)
+    / (coefficients.scale * coefficients.aspectScale);
+  const outputY = ((point.y - 0.5) * 2 - coefficients.offsetY) / coefficients.scale;
+  const inverse = coefficients.inverseHomography;
+  const denominator = inverse[6] * outputX + inverse[7] * outputY + inverse[8];
+  const safeDenominator = Math.abs(denominator) < 1e-6
+    ? Math.sign(denominator || 1) * 1e-6
+    : denominator;
+  const warpedX = (inverse[0] * outputX + inverse[1] * outputY + inverse[2])
+    / safeDenominator;
+  const warpedY = (inverse[3] * outputX + inverse[4] * outputY + inverse[5])
+    / safeDenominator;
   return {
     x: geometry.crop.x + (warpedX * 0.5 + 0.5) * geometry.crop.width,
     y: geometry.crop.y + (warpedY * 0.5 + 0.5) * geometry.crop.height,

@@ -2083,7 +2083,7 @@ function GeometryPanel({
       <Range {...rangeProps("horizontal", "水平", -100, 100)} />
       <Range {...rangeProps("rotation", "旋转", -45, 45, { step: 0.1, decimals: 1 })} />
       <Range {...rangeProps("transformAspect", "长宽比", -100, 100)} />
-      <Range {...rangeProps("scale", "比例", 100, 200, { signed: false })} />
+      <Range {...rangeProps("scale", "比例", 50, 150, { signed: false })} />
       <Range {...rangeProps("offsetX", "X 轴偏移", -100, 100)} />
       <Range {...rangeProps("offsetY", "Y 轴偏移", -100, 100)} />
       <label className="constrain-crop-toggle">

@@ -113,6 +113,53 @@ const aspectPoint = mapGeometryOutputPointToSource(
 );
 assert.ok(Math.abs(aspectPoint.x - 0.25) > 0.02, "transform aspect must visibly change the mapped image");
 
+const centeredTransforms = [
+  { vertical: 70 },
+  { horizontal: -70 },
+  { rotation: 31 },
+  { transformAspect: 65 },
+  { scale: 62 },
+].map((patch) => mapGeometryOutputPointToSource(
+  { x: 0.5, y: 0.5 },
+  { ...defaultGeometrySettings(), constrainCrop: false, ...patch },
+));
+for (const centerPoint of centeredTransforms) {
+  assert.ok(Math.abs(centerPoint.x - 0.5) < 1e-7 && Math.abs(centerPoint.y - 0.5) < 1e-7,
+    "manual transforms without offsets must keep the photo center fixed");
+}
+
+const verticalAxis = [0.2, 0.8].map((x) => mapGeometryOutputPointToSource(
+  { x, y: 0.5 },
+  { ...defaultGeometrySettings(), constrainCrop: false, vertical: 64 },
+));
+assert.ok(verticalAxis.every((point) => Math.abs(point.y - 0.5) < 1e-7),
+  "vertical perspective must pivot around the horizontal center axis");
+
+const horizontalAxis = [0.2, 0.8].map((y) => mapGeometryOutputPointToSource(
+  { x: 0.5, y },
+  { ...defaultGeometrySettings(), constrainCrop: false, horizontal: -64 },
+));
+assert.ok(horizontalAxis.every((point) => Math.abs(point.x - 0.5) < 1e-7),
+  "horizontal perspective must pivot around the vertical center axis");
+
+const uniformScaleX = mapGeometryOutputPointToSource(
+  { x: 0.8, y: 0.5 },
+  { ...defaultGeometrySettings(), constrainCrop: false, scale: 125 },
+);
+const uniformScaleY = mapGeometryOutputPointToSource(
+  { x: 0.5, y: 0.8 },
+  { ...defaultGeometrySettings(), constrainCrop: false, scale: 125 },
+);
+assert.ok(Math.abs((uniformScaleX.x - 0.5) - (uniformScaleY.y - 0.5)) < 1e-7,
+  "scale must resize both axes equally and preserve the image aspect ratio");
+
+const widthOnlyAspect = mapGeometryOutputPointToSource(
+  { x: 0.8, y: 0.7 },
+  { ...defaultGeometrySettings(), constrainCrop: false, transformAspect: 55 },
+);
+assert.ok(Math.abs(widthOnlyAspect.y - 0.7) < 1e-7,
+  "transform aspect must change width without changing vertical scale");
+
 const constrainedGeometry = {
   ...defaultGeometrySettings(),
   rotation: 17,
