@@ -1221,6 +1221,12 @@ function Range({
         value={liveValue}
         disabled={disabled}
         aria-label={label}
+        title={`双击恢复${label}默认值${Number.isFinite(defaultValue) ? ` ${format(defaultValue)}` : ""}`}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          resetToDefault();
+        }}
         onPointerDown={(event) => {
           draggingRef.current = true;
           try {
@@ -1917,8 +1923,8 @@ function MaskingPanel({
                 <button type="button" className={paintMode === "add" ? "active" : ""} onClick={() => onPaintModeChange("add")}>添加</button>
                 <button type="button" className={paintMode === "subtract" ? "active" : ""} onClick={() => onPaintModeChange("subtract")}>减去</button>
               </div>
-              <Range label="大小" value={brushSettings.size} min={1} max={100} signed={false} onChange={(size) => onBrushSettingsChange({ ...brushSettings, size })} />
-              <Range label="羽化" value={brushSettings.feather} min={0} max={100} signed={false} onChange={(feather) => onBrushSettingsChange({ ...brushSettings, feather })} />
+              <Range label="大小" value={brushSettings.size} min={1} max={100} signed={false} defaultValue={18} onChange={(size) => onBrushSettingsChange({ ...brushSettings, size })} />
+              <Range label="羽化" value={brushSettings.feather} min={0} max={100} signed={false} defaultValue={70} onChange={(feather) => onBrushSettingsChange({ ...brushSettings, feather })} />
               <p>在中间照片上拖动绘制；红色仅用于显示选区，调节局部参数时会自动隐藏。</p>
             </div>
           )}
@@ -4310,7 +4316,20 @@ export function App({ onLogout, session, username = "本机用户" }) {
               </small>
               <strong>{settings.strength}%</strong>
             </div>
-            <input type="range" min="0" max="100" value={settings.strength} disabled={!active} onChange={(event) => updateActiveSettings({ strength: Number(event.target.value), preset: "custom" })} />
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={settings.strength}
+              disabled={!active}
+              aria-label="风格强度"
+              title="双击恢复风格强度 68%"
+              onChange={(event) => updateActiveSettings({ strength: Number(event.target.value), preset: "custom" })}
+              onDoubleClick={(event) => {
+                event.preventDefault();
+                updateActiveSettings({ strength: defaultSettings().strength, preset: "custom" });
+              }}
+            />
             <div className="preset-group">
               {Object.entries(PRESETS).map(([key, item]) => (
                 <GlassButton key={key} className={settings.preset === key ? "selected" : ""} disabled={!active} onClick={() => applyPreset(key)}>{item.label}</GlassButton>
@@ -4466,6 +4485,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               min={0}
               max={40}
               signed={false}
+              defaultValue={defaultSettings().grain}
               disabled={!active}
               onPreview={(grain) => previewBasic({
                 ...settings,
@@ -4483,6 +4503,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               step={0.1}
               decimals={1}
               signed={false}
+              defaultValue={BASIC_DEFAULTS.grainSize}
               disabled={!active}
               onPreview={(grainSize) => previewBasic({ ...settings, grainSize, preset: "custom" })}
               onInteractionChange={handleBasicInteraction}
@@ -4494,6 +4515,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               min={0}
               max={100}
               signed={false}
+              defaultValue={BASIC_DEFAULTS.grainRoughness}
               disabled={!active}
               onPreview={(grainRoughness) => previewBasic({ ...settings, grainRoughness, preset: "custom" })}
               onInteractionChange={handleBasicInteraction}
@@ -4505,6 +4527,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               min={0}
               max={100}
               signed={false}
+              defaultValue={BASIC_DEFAULTS.grainColor}
               disabled={!active}
               onPreview={(grainColor) => previewBasic({ ...settings, grainColor, preset: "custom" })}
               onInteractionChange={handleBasicInteraction}
@@ -4516,6 +4539,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               min={0}
               max={100}
               signed={false}
+              defaultValue={BASIC_DEFAULTS.grainHighlights}
               disabled={!active}
               onPreview={(grainHighlights) => previewBasic({ ...settings, grainHighlights, preset: "custom" })}
               onInteractionChange={handleBasicInteraction}
@@ -4848,7 +4872,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
                 </div>
                 <label className="field-label">成片像素大小<select value={exportOptions.resolution} onChange={(event) => setExportOptions({ ...exportOptions, resolution: event.target.value })}><option value="original">原始裁切尺寸</option><option value="4k">4K · 成片最长边 3840</option><option value="2k">2K · 成片最长边 2560</option><option value="1080p">1080p · 成片最长边 1920</option></select></label>
                 <label className="field-label">图片格式<select value={exportOptions.format} onChange={(event) => setExportOptions({ ...exportOptions, format: event.target.value })}><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option><option value="bmp">BMP</option></select></label>
-                <label className="field-label full">质量 <span>{exportOptions.quality}%</span><input type="range" min="50" max="100" value={exportOptions.quality} disabled={!["jpeg", "webp"].includes(exportOptions.format)} onChange={(event) => setExportOptions({ ...exportOptions, quality: Number(event.target.value) })} /></label>
+                <label className="field-label full">质量 <span>{exportOptions.quality}%</span><input type="range" min="50" max="100" value={exportOptions.quality} disabled={!['jpeg', 'webp'].includes(exportOptions.format)} aria-label="导出质量" title="双击恢复导出质量 92%" onChange={(event) => setExportOptions({ ...exportOptions, quality: Number(event.target.value) })} onDoubleClick={(event) => { event.preventDefault(); setExportOptions({ ...exportOptions, quality: 92 }); }} /></label>
               </div>
             </div>
             <div className="preset-export">

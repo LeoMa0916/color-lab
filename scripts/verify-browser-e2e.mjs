@@ -498,6 +498,15 @@ try {
   await evaluate(cdp, "document.querySelector('.stage-preview-modal .mini-button').click()");
   await waitFor(cdp, "!document.querySelector('.stage-preview-modal')");
 
+  await evaluate(cdp, `(() => {
+    const input = document.querySelector('input[aria-label="风格强度"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '31');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  })()`);
+  await waitFor(cdp, "document.querySelector('input[aria-label=\"风格强度\"]').value === '68'");
+  await delay(900);
+
   await evaluate(cdp, "document.querySelector('.header-actions > .primary-button').click()");
   await waitFor(cdp, "document.querySelector('.export-destination')");
   const exportDialog = await evaluate(cdp, `(() => ({
@@ -508,6 +517,13 @@ try {
   assert(exportDialog.title.includes("2"), "Export dialog does not describe the selected batch");
   assert(exportDialog.destination.includes("默认下载位置"), "Export destination fallback is missing");
   assert(exportDialog.button.includes("2"), "Batch export button does not include the selection count");
+  await evaluate(cdp, `(() => {
+    const input = document.querySelector('input[aria-label="导出质量"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '61');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  })()`);
+  await waitFor(cdp, "document.querySelector('input[aria-label=\"导出质量\"]').value === '92'");
   await evaluate(cdp, "document.querySelector('.export-modal .modal-title .mini-button').click()");
   await waitFor(cdp, "!document.querySelector('.export-modal')");
 
@@ -654,17 +670,15 @@ try {
   const committedChecksum = await evaluate(cdp, checksumExpression);
   assert(initialChecksum !== committedChecksum, "Final basic adjustment render reverted to the unadjusted image");
 
-  await evaluate(cdp, `(() => {
-    const label = document.querySelector('[data-range-label="曝光度"] .range-label');
-    label.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-  })()`);
+  await evaluate(cdp, `document.querySelector('[data-range-label="曝光度"] input[type="range"]')
+    .dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }))`);
   await waitFor(
     cdp,
     "document.querySelector('[data-range-label=\"曝光度\"] input[type=\"range\"]')?.value === '0'",
   );
   await delay(1200);
   const resetChecksum = await evaluate(cdp, checksumExpression);
-  assert(resetChecksum === initialChecksum, "Double-clicking a Basic label did not reset its parameter");
+  assert(resetChecksum === initialChecksum, "Double-clicking a slider thumb did not reset its parameter");
 
   await verifyContinuousRange("色温", 32);
   await verifyContinuousRange("饱和度", -48);
