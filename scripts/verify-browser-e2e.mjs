@@ -707,6 +707,80 @@ try {
   const curveChecksum = await evaluate(cdp, checksumExpression);
   assert(curveChecksum !== basicChecksum, "Curve adjustment did not change the preview");
 
+  const splitBeforeMask = await evaluate(cdp, "parseFloat(document.querySelector('.split-line').style.left)");
+  await evaluate(cdp, "document.querySelector('.masking-section .inspector-disclosure-toggle').click()");
+  await waitFor(cdp, "document.querySelector('.masking-section .mask-tool-grid')");
+  await evaluate(cdp, "document.querySelectorAll('.masking-section .mask-tool-grid button')[2].click()");
+  await waitFor(cdp, "document.querySelector('.masking-section .active-mask-editor')");
+  const maskBefore = await evaluate(cdp, checksumExpression);
+  await evaluate(cdp, `(() => {
+    const input = document.querySelector('.masking-section input[aria-label="曝光度"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '1.25');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await delay(1200);
+  const maskAfter = await evaluate(cdp, checksumExpression);
+  assert(maskBefore !== maskAfter, "Local radial mask exposure did not update the preview pixels");
+  await waitFor(cdp, "document.querySelector('.photo-stage.editing-mask')");
+  const maskStage = await evaluate(cdp, `(() => {
+    const rect = document.querySelector('.photo-stage').getBoundingClientRect();
+    return { x: rect.x + rect.width * .48, y: rect.y + rect.height * .52 };
+  })()`);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: maskStage.x, y: maskStage.y, button: "left", buttons: 1, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: maskStage.x + 64, y: maskStage.y + 20, button: "left", buttons: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: maskStage.x + 64, y: maskStage.y + 20, button: "left", buttons: 0, clickCount: 1 });
+  await waitFor(cdp, "document.querySelector('.mask-layer-list > button.active small')?.textContent.includes('1')");
+  const brushState = await evaluate(cdp, `(() => ({
+    overlayWidth: document.querySelector('.photo-edit-overlay').width,
+    sourceLabel: document.querySelector('.mask-layer-list > button.active small')?.textContent,
+  }))()`);
+  assert(brushState.overlayWidth > 1, "Mask overlay did not render on the photo stage");
+  await evaluate(cdp, "document.querySelector('.stage-expand-button').click()");
+  await waitFor(cdp, "!document.querySelector('.photo-stage.editing-mask')");
+  const splitAfterMask = await evaluate(cdp, "parseFloat(document.querySelector('.split-line').style.left)");
+  assert(Math.abs(splitAfterMask - splitBeforeMask) < 0.01, "Mask tool did not restore the comparison split");
+
+  await evaluate(cdp, "document.querySelector('.geometry-section .inspector-disclosure-toggle').click()");
+  await waitFor(cdp, "document.querySelector('.geometry-section .aspect-presets')");
+  await evaluate(cdp, `(() => {
+    [...document.querySelectorAll('.geometry-section .aspect-presets button')]
+      .find((button) => button.textContent.trim() === '1:1').click();
+  })()`);
+  await waitFor(cdp, "document.querySelector('canvas.styled').width === document.querySelector('canvas.styled').height");
+  const geometryState = await evaluate(cdp, `(() => {
+    const canvas = document.querySelector('canvas.styled');
+    return { width: canvas.width, height: canvas.height };
+  })()`);
+  assert(geometryState.width === geometryState.height, "1:1 crop did not change the rendered frame dimensions");
+  await evaluate(cdp, "document.querySelector('.geometry-tool-heading button:first-child').click()");
+  await waitFor(cdp, "document.querySelector('.photo-stage.editing-crop')");
+  const cropStage = await evaluate(cdp, `(() => {
+    const rect = document.querySelector('.photo-stage').getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  })()`);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: cropStage.x, y: cropStage.y, button: "left", buttons: 1, clickCount: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: cropStage.x + 24, y: cropStage.y, button: "left", buttons: 1 });
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: cropStage.x + 24, y: cropStage.y, button: "left", buttons: 0, clickCount: 1 });
+  await waitFor(cdp, "[...document.querySelectorAll('.geometry-section .aspect-presets button')].find((button) => button.textContent.trim() === '自由')?.classList.contains('active')");
+  await evaluate(cdp, "document.querySelector('.geometry-section').scrollIntoView({ block: 'center' })");
+  await delay(220);
+  const maskGeometryShot = await cdp.send("Page.captureScreenshot", {
+    format: "png",
+    captureBeyondViewport: false,
+  });
+  writeFileSync(
+    join(project, "qa-private", "mask-geometry-desktop.png"),
+    Buffer.from(maskGeometryShot.data, "base64"),
+  );
+  await evaluate(cdp, "document.querySelector('.stage-expand-button').click()");
+  await waitFor(cdp, "!document.querySelector('.photo-stage.editing-crop')");
+  const splitAfterCrop = await evaluate(cdp, "parseFloat(document.querySelector('.split-line').style.left)");
+  assert(Math.abs(splitAfterCrop - splitBeforeMask) < 0.01, "Crop tool did not restore the comparison split");
+  await evaluate(cdp, "document.querySelector('.geometry-tool-heading button:last-child').click()");
+  await delay(900);
+  console.log("Mask and crop browser verification passed", { maskBefore, maskAfter, brushState, geometryState });
+
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 390,
     height: 844,

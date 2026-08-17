@@ -500,6 +500,8 @@ figure { margin: 0; }
 
 .photo-stage.has-photo { cursor: zoom-in; }
 .photo-stage.has-photo.dragging { cursor: ew-resize; }
+.photo-stage.editing-mask { cursor: crosshair; }
+.photo-stage.editing-crop { cursor: move; }
 
 .photo-canvas {
   position: absolute;
@@ -581,6 +583,25 @@ figure { margin: 0; }
   backdrop-filter: blur(22px) saturate(160%);
   cursor: zoom-in;
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.photo-edit-overlay {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.tool-label {
+  left: 14px;
+  z-index: 5;
+  border: 1px solid rgba(255,255,255,.18);
+  color: #fff;
+  background: rgba(18,22,28,.7);
+  backdrop-filter: blur(18px) saturate(145%);
 }
 
 .stage-expand-button:hover {
@@ -1334,6 +1355,153 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 }
 
 .basic-section .inspector-disclosure-body { padding: 0; }
+
+.mask-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.mask-tool-grid button,
+.geometry-tool-heading button,
+.aspect-presets button,
+.mask-editor-toolbar button,
+.mask-mode-control button {
+  min-width: 0;
+  border: 1px solid rgba(255,255,255,.09);
+  color: #cbd0d8;
+  background: rgba(255,255,255,.035);
+  cursor: pointer;
+}
+
+.mask-tool-grid button {
+  min-height: 51px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 5px;
+  padding: 5px 2px;
+  border-radius: 11px;
+  font-size: 9px;
+}
+
+.mask-tool-grid button:hover:not(:disabled),
+.geometry-tool-heading button:hover:not(:disabled),
+.aspect-presets button:hover:not(:disabled),
+.mask-editor-toolbar button:hover,
+.mask-mode-control button:hover { background: rgba(255,255,255,.075); color: #fff; }
+
+.mask-tool-grid button:disabled { opacity: .35; cursor: default; }
+
+.mask-layer-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.mask-layer-list > button {
+  width: 100%;
+  min-height: 45px;
+  display: grid;
+  grid-template-columns: 26px minmax(0,1fr) 28px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: #d9dce2;
+  background: rgba(255,255,255,.025);
+  cursor: pointer;
+  text-align: left;
+}
+
+.mask-layer-list > button.active {
+  border-color: rgba(121,162,255,.42);
+  background: rgba(63,116,255,.13);
+  box-shadow: inset 0 1px rgba(255,255,255,.08);
+}
+
+.mask-layer-swatch {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #ffd8df;
+  background: rgba(255,68,92,.22);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mask-layer-list > button > span:nth-child(2) { min-width: 0; display: grid; gap: 2px; }
+.mask-layer-list strong { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.mask-layer-list small { color: #7f8793; font-size: 8px; }
+.mask-layer-list > button > span:last-child { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 9px; }
+.mask-layer-list > button > span:last-child:hover { background: rgba(255,255,255,.08); }
+
+.active-mask-editor {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255,255,255,.065);
+}
+
+.mask-editor-toolbar,
+.geometry-tool-heading,
+.aspect-presets,
+.mask-mode-control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.mask-editor-toolbar button,
+.geometry-tool-heading button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  border-radius: 10px;
+  font-size: 9px;
+}
+
+.mask-editor-toolbar button.active,
+.geometry-tool-heading button.active,
+.aspect-presets button.active,
+.mask-mode-control button.active {
+  border-color: rgba(121,162,255,.42);
+  color: #eef3ff;
+  background: rgba(63,116,255,.18);
+}
+
+.mask-editor-toolbar button:last-child { margin-left: auto; width: 34px; padding: 0; color: #ff8798; }
+
+.mask-brush-controls {
+  margin: 9px 0;
+  padding: 9px 10px 5px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 13px;
+  background: rgba(7,10,14,.35);
+}
+
+.mask-mode-control { margin-bottom: 4px; }
+.mask-mode-control button { min-height: 29px; flex: 1; border-radius: 9px; font-size: 9px; }
+.mask-brush-controls p,
+.geometry-help,
+.inspector-empty-copy { margin: 6px 0 2px; color: #848b97; font-size: 9px; line-height: 1.45; }
+.mask-local-adjustments { margin-top: 3px; }
+
+.geometry-tool-heading { justify-content: space-between; }
+.geometry-tool-heading button:first-child { flex: 1; }
+.aspect-presets { margin: 9px 0 6px; }
+.aspect-presets button { min-height: 30px; flex: 1; padding: 0 2px; border-radius: 9px; font-size: 8px; }
+.geometry-help { display: flex; align-items: center; gap: 5px; margin-top: 8px; }
+
+@media (max-width: 720px) {
+  .mask-tool-grid button { min-height: 48px; }
+  .mask-editor-toolbar { flex-wrap: wrap; }
+}
 
 @keyframes inspector-body-in {
   from { opacity: 0; transform: translate3d(0, -5px, 0); }

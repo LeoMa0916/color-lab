@@ -87,6 +87,9 @@ const styleText = serializeClstyle({
   luts: { global: constrained, residuals: { skin: residual } },
 });
 const restored = deserializeClstyle(styleText);
+const styleEnvelope = JSON.parse(styleText);
+assert.equal(styleEnvelope.schemaVersion, 6, "CLSTYLE did not advertise the 5.1 settings schema");
+assert.equal(styleEnvelope.engine, "Color Engine 5.1");
 assert.ok(restored.luts.global.data instanceof Float32Array);
 assert.equal(restored.luts.global.data.length, constrained.data.length);
 assert.equal(restored.luts.residuals.skin.size, 17);

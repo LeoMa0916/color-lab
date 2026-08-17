@@ -505,12 +505,7 @@ export function createRenderPipeline(workerClient, environment = globalThis) {
       if (webGpuRenderer) {
         try {
           const result = await webGpuRenderer.render(payload);
-          const histogram = await workerClient.run(
-            "histogram",
-            { data: new Uint8ClampedArray(result.data) },
-            { photoId: `histogram:${options?.photoId || "preview"}` },
-          );
-          return { ...result, histogram, backend: "webgpu" };
+          return { ...result, backend: "webgpu" };
         } catch {
           // The worker path is the compatibility and device-loss fallback.
         }
@@ -518,12 +513,7 @@ export function createRenderPipeline(workerClient, environment = globalThis) {
       if (webGlRenderer) {
         try {
           const result = await webGlRenderer.render(payload);
-          const histogram = await workerClient.run(
-            "histogram",
-            { data: new Uint8ClampedArray(result.data) },
-            { photoId: `histogram:${options?.photoId || "preview"}` },
-          );
-          return { ...result, histogram, backend: "webgl2" };
+          return { ...result, backend: "webgl2" };
         } catch {
           // The worker path is the shader-compile and context-loss fallback.
         }

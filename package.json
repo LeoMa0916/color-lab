@@ -19,6 +19,7 @@
     "verify:datasets": "node scripts/verify-datasets.mjs",
     "verify:lighting": "node scripts/verify-lighting.mjs",
     "verify:highlight": "node scripts/verify-highlight-safety.mjs",
+    "verify:mask-geometry": "node scripts/verify-mask-geometry.mjs",
     "verify:lut": "node scripts/verify-lut.mjs",
     "verify:performance": "node scripts/verify-performance.mjs",
     "verify:quality": "node scripts/verify-quality-metrics.mjs",

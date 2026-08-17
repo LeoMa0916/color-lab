@@ -6,6 +6,7 @@ const scripts = [
   "verify:semantic",
   "verify:lighting",
   "verify:highlight",
+  "verify:mask-geometry",
   "verify:color-management",
   "verify:lut",
   "verify:texture",

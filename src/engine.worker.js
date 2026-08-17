@@ -5,6 +5,8 @@ import { rgbaToBmpBuffer } from "./exportEncoding.js";
 import { applyStyleLuts } from "./lut3d.js";
 import { buildStyleLuts } from "./styleLutEngine.js";
 import { applyTextureMatchTiled } from "./textureEngine.js";
+import { applyLocalMasks } from "./maskEngine.js";
+import { applyGeometryTransform } from "./geometryEngine.js";
 
 const latestRevisions = new Map();
 
@@ -80,6 +82,28 @@ self.onmessage = async (event) => {
         height: payload.height,
       };
       transfer = [output.buffer];
+    } else if (type === "finalize-preview") {
+      const output = payload.data instanceof Uint8ClampedArray
+        ? payload.data
+        : new Uint8ClampedArray(payload.data);
+      applyLocalMasks(
+        output,
+        payload.width,
+        payload.height,
+        payload.settings?.masks,
+        payload.semanticMasks,
+      );
+      const finalFrame = applyGeometryTransform(
+        output,
+        payload.width,
+        payload.height,
+        payload.settings?.geometry,
+      );
+      result = {
+        ...finalFrame,
+        histogram: getHistogram(finalFrame.data),
+      };
+      transfer = [finalFrame.data.buffer];
     } else if (type === "render-export") {
       const output = payload.data instanceof Uint8ClampedArray
         ? payload.data
@@ -110,6 +134,21 @@ self.onmessage = async (event) => {
       applyBasicAdjustments(output, payload.width, payload.height, payload.settings);
       report(82, "正在应用曲线");
       applyCurveLuts(output, payload.settings.curves);
+      report(85, "正在应用局部蒙版");
+      applyLocalMasks(
+        output,
+        payload.width,
+        payload.height,
+        payload.settings.masks,
+        payload.semanticMasks,
+      );
+      report(87, "正在校正裁切与透视");
+      const finalFrame = applyGeometryTransform(
+        output,
+        payload.width,
+        payload.height,
+        payload.settings.geometry,
+      );
       if (
         payload.settings.strength > 5
         && profileDistance(payload.source, payload.reference) > 3
@@ -121,23 +160,23 @@ self.onmessage = async (event) => {
 
       if (payload.output.format === "bmp") {
         const buffer = rgbaToBmpBuffer(
-          output,
-          payload.width,
-          payload.height,
+          finalFrame.data,
+          finalFrame.width,
+          finalFrame.height,
           (progress) => report(88 + progress * 11, "正在编码 BMP"),
         );
         result = {
           buffer,
           mime: "image/bmp",
           extension: "bmp",
-          width: payload.width,
-          height: payload.height,
+          width: finalFrame.width,
+          height: finalFrame.height,
         };
         transfer = [buffer];
       } else if (typeof OffscreenCanvas !== "undefined") {
-        const canvas = new OffscreenCanvas(payload.width, payload.height);
+        const canvas = new OffscreenCanvas(finalFrame.width, finalFrame.height);
         canvas.getContext("2d").putImageData(
-          new ImageData(output, payload.width, payload.height),
+          new ImageData(finalFrame.data, finalFrame.width, finalFrame.height),
           0,
           0,
         );
@@ -149,18 +188,18 @@ self.onmessage = async (event) => {
           blob,
           mime: payload.output.mime,
           extension: payload.output.extension,
-          width: payload.width,
-          height: payload.height,
+          width: finalFrame.width,
+          height: finalFrame.height,
         };
       } else {
         result = {
-          data: output,
+          data: finalFrame.data,
           mime: payload.output.mime,
           extension: payload.output.extension,
-          width: payload.width,
-          height: payload.height,
+          width: finalFrame.width,
+          height: finalFrame.height,
         };
-        transfer = [output.buffer];
+        transfer = [finalFrame.data.buffer];
       }
       report(100, "导出完成");
     } else {

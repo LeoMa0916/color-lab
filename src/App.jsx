@@ -13,18 +13,27 @@ import {
 } from "@phosphor-icons/react";
 import LibRaw from "libraw-wasm";
 import {
+  Brush,
   CircleCheck,
+  CircleDashed,
   Cloud,
   CloudOff,
+  Crop,
+  Eye,
+  EyeOff,
   FolderOpen,
   History,
   Images,
+  Layers,
   LogOut,
   Maximize2,
+  Move,
   RefreshCw,
+  ScanLine,
   Square,
   Trash2,
   UserRound,
+  WandSparkles,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
@@ -56,6 +65,20 @@ import {
   serializeClstyle,
 } from "./styleStore";
 import { applyTextureMatch } from "./textureEngine";
+import {
+  DEFAULT_MASK_ADJUSTMENTS,
+  applyLocalMasks,
+  createMaskLayer,
+  maskOverlayImageData,
+  transferableMaskSettings,
+} from "./maskEngine";
+import {
+  applyGeometryTransform,
+  cropForAspect,
+  defaultGeometrySettings,
+  mapGeometryOutputPointToSource,
+  sourceLongEdgeForCroppedOutput,
+} from "./geometryEngine";
 import { createZipBlob } from "./zipEncoding";
 import { engineWorker } from "./engineClient";
 import {
@@ -183,6 +206,16 @@ function defaultSettings() {
     ...BASIC_DEFAULTS,
     colorPlane: defaultColorPlaneSettings(),
     curves: structuredClone(DEFAULT_CURVES),
+    masks: { layers: [] },
+    geometry: defaultGeometrySettings(),
+  };
+}
+
+function transferableStyleSettings(settings) {
+  const { geometry: _geometry, masks, ...styleSettings } = settings || {};
+  return {
+    ...structuredClone(styleSettings),
+    masks: transferableMaskSettings(masks),
   };
 }
 
@@ -551,7 +584,29 @@ function makeCurvePreviewBase(base, maximumSide = CURVE_PREVIEW_MAX_SIDE) {
   };
 }
 
-function renderAdjustedBase(base, settings, curves, canvas, outputRef) {
+function putFrameOnCanvas(frame, canvas) {
+  if (canvas.width !== frame.width) canvas.width = frame.width;
+  if (canvas.height !== frame.height) canvas.height = frame.height;
+  canvas.getContext("2d").putImageData(
+    new ImageData(frame.data, frame.width, frame.height),
+    0,
+    0,
+  );
+}
+
+function finalizePreviewFrame(data, width, height, settings, semanticMasks) {
+  applyLocalMasks(data, width, height, settings.masks, semanticMasks);
+  return applyGeometryTransform(data, width, height, settings.geometry);
+}
+
+function renderAdjustedBase(
+  base,
+  settings,
+  curves,
+  canvas,
+  outputRef,
+  semanticMasks = null,
+) {
   let output = outputRef.current;
   if (!output || output.length !== base.data.length) {
     output = new Uint8ClampedArray(base.data.length);
@@ -560,17 +615,12 @@ function renderAdjustedBase(base, settings, curves, canvas, outputRef) {
   output.set(base.data);
   applyBasicAdjustments(output, base.width, base.height, settings);
   applyCurveLuts(output, curves);
-  if (canvas.width !== base.width) canvas.width = base.width;
-  if (canvas.height !== base.height) canvas.height = base.height;
-  canvas.getContext("2d").putImageData(
-    new ImageData(output, base.width, base.height),
-    0,
-    0,
-  );
-  return output;
+  const frame = finalizePreviewFrame(output, base.width, base.height, settings, semanticMasks);
+  putFrameOnCanvas(frame, canvas);
+  return frame;
 }
 
-function renderCurveBase(base, curves, canvas, outputRef) {
+function renderCurveBase(base, curves, canvas, outputRef, settings, semanticMasks = null) {
   let output = outputRef.current;
   if (!output || output.length !== base.data.length) {
     output = new Uint8ClampedArray(base.data.length);
@@ -578,14 +628,9 @@ function renderCurveBase(base, curves, canvas, outputRef) {
   }
   output.set(base.data);
   applyCurveLuts(output, curves);
-  if (canvas.width !== base.width) canvas.width = base.width;
-  if (canvas.height !== base.height) canvas.height = base.height;
-  canvas.getContext("2d").putImageData(
-    new ImageData(output, base.width, base.height),
-    0,
-    0,
-  );
-  return output;
+  const frame = finalizePreviewFrame(output, base.width, base.height, settings, semanticMasks);
+  putFrameOnCanvas(frame, canvas);
+  return frame;
 }
 
 async function analyzeUrl(url, { onStage } = {}) {
@@ -708,24 +753,41 @@ function droppedFiles(dataTransfer) {
   return files;
 }
 
-function xmpPreset(settings, name) {
-  const value = (key) => settings[key] ?? 0;
-  const tonePoints = settings.curves.master
+function xmlEscape(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function xmpCurve(points) {
+  return (points || [{ x: 0, y: 0 }, { x: 255, y: 255 }])
     .map((point) => `<rdf:li>${Math.round(point.x)}, ${Math.round(point.y)}</rdf:li>`)
     .join("");
+}
+
+function xmpPreset(settings, name) {
+  const value = (key) => settings[key] ?? 0;
+  const curves = settings.curves || DEFAULT_CURVES;
   return `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about="" xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
-      crs:PresetType="Normal" crs:Name="${name}" crs:ProcessVersion="15.4"
+      crs:PresetType="Normal" crs:Name="${xmlEscape(name)}" crs:ProcessVersion="15.4"
       crs:Temperature="${value("temperature")}" crs:Tint="${value("tint")}"
       crs:Exposure2012="${value("exposure")}" crs:Contrast2012="${value("contrast")}"
       crs:Highlights2012="${value("highlights")}" crs:Shadows2012="${value("shadows")}"
       crs:Whites2012="${value("whites")}" crs:Blacks2012="${value("blacks")}"
       crs:Texture="${value("texture")}" crs:Clarity2012="${value("clarity")}"
       crs:Dehaze="${value("dehaze")}" crs:Vibrance="${value("vibrance")}"
-      crs:Saturation="${value("saturation")}" crs:GrainAmount="${value("grain")}">
-      <crs:ToneCurvePV2012><rdf:Seq>${tonePoints}</rdf:Seq></crs:ToneCurvePV2012>
+      crs:Saturation="${value("saturation")}" crs:GrainAmount="${value("grain")}"
+      crs:GrainSize="${clamp(Math.round(value("grainSize") * 25), 0, 100)}"
+      crs:GrainFrequency="${clamp(Math.round(value("grainRoughness")), 0, 100)}">
+      <crs:ToneCurvePV2012><rdf:Seq>${xmpCurve(curves.master)}</rdf:Seq></crs:ToneCurvePV2012>
+      <crs:ToneCurvePV2012Red><rdf:Seq>${xmpCurve(curves.red)}</rdf:Seq></crs:ToneCurvePV2012Red>
+      <crs:ToneCurvePV2012Green><rdf:Seq>${xmpCurve(curves.green)}</rdf:Seq></crs:ToneCurvePV2012Green>
+      <crs:ToneCurvePV2012Blue><rdf:Seq>${xmpCurve(curves.blue)}</rdf:Seq></crs:ToneCurvePV2012Blue>
     </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>
@@ -1700,6 +1762,219 @@ function styleAnalysisMeta(profile) {
   return profile.version >= 3 ? "分区感知 v3" : "感知分析 v2";
 }
 
+const MASK_TOOL_TYPES = [
+  { id: "brush", label: "画笔", icon: Brush },
+  { id: "linear", label: "线性", icon: ScanLine },
+  { id: "radial", label: "径向", icon: CircleDashed },
+  { id: "subject", label: "主体", icon: UserRound },
+  { id: "sky", label: "天空", icon: WandSparkles },
+];
+
+const LOCAL_ADJUSTMENT_CONTROLS = [
+  ["曝光度", "exposure", -3, 3, 0.05, 2],
+  ["对比度", "contrast", -100, 100, 1, 0],
+  ["高光", "highlights", -100, 100, 1, 0],
+  ["阴影", "shadows", -100, 100, 1, 0],
+  ["色温", "temperature", -100, 100, 1, 0],
+  ["色调", "tint", -100, 100, 1, 0],
+  ["清晰度", "clarity", -100, 100, 1, 0],
+  ["去朦胧", "dehaze", -100, 100, 1, 0],
+  ["饱和度", "saturation", -100, 100, 1, 0],
+];
+
+function MaskingPanel({
+  settings,
+  disabled,
+  activeMaskId,
+  onActiveMaskChange,
+  onChange,
+  activeTool,
+  onToolChange,
+  paintMode,
+  onPaintModeChange,
+  brushSettings,
+  onBrushSettingsChange,
+  overlayVisible,
+  onOverlayVisibleChange,
+  semanticReady,
+}) {
+  const layers = settings.masks?.layers || [];
+  const activeLayer = layers.find((layer) => layer.id === activeMaskId) || null;
+  const updateLayers = (nextLayers) => onChange({
+    masks: { ...(settings.masks || {}), layers: nextLayers },
+    preset: "custom",
+  });
+  const updateLayer = (id, patch) => updateLayers(layers.map((layer) =>
+    layer.id === id ? { ...layer, ...patch } : layer));
+  const addLayer = (type) => {
+    const source = type === "linear"
+      ? [{ type, mode: "add", start: { x: 0.2, y: 0.5 }, end: { x: 0.8, y: 0.5 } }]
+      : type === "radial"
+        ? [{ type, mode: "add", center: { x: 0.5, y: 0.5 }, radiusX: 0.28, radiusY: 0.28, feather: 65 }]
+        : undefined;
+    const layer = createMaskLayer(type, source ? { sources: source } : {});
+    updateLayers([...layers, layer]);
+    onActiveMaskChange(layer.id);
+    onOverlayVisibleChange(true);
+    onToolChange("mask");
+  };
+  return (
+    <InspectorDisclosure
+      title="蒙版"
+      meta={layers.length ? `${layers.length} 个局部区域` : "Camera Raw 局部调整"}
+      className="masking-section"
+    >
+      <div className="mask-tool-grid" role="toolbar" aria-label="创建蒙版">
+        {MASK_TOOL_TYPES.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            type="button"
+            disabled={disabled || ((id === "subject" || id === "sky") && !semanticReady)}
+            title={(id === "subject" || id === "sky") && !semanticReady ? "等待语义识别完成" : `创建${label}蒙版`}
+            onClick={() => addLayer(id)}
+          >
+            <Icon size={15} />
+            <span>{label}</span>
+          </button>
+        ))}
+      </div>
+      {!!layers.length && (
+        <div className="mask-layer-list" aria-label="蒙版列表">
+          {layers.map((layer, index) => (
+            <button
+              key={layer.id}
+              type="button"
+              className={layer.id === activeMaskId ? "active" : ""}
+              onClick={() => onActiveMaskChange(layer.id)}
+            >
+              <span className="mask-layer-swatch">{index + 1}</span>
+              <span><strong>{layer.name}</strong><small>{layer.sources?.length || 0} 个选区</small></span>
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label={layer.enabled ? "隐藏蒙版" : "显示蒙版"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  updateLayer(layer.id, { enabled: !layer.enabled });
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    updateLayer(layer.id, { enabled: !layer.enabled });
+                  }
+                }}
+              >{layer.enabled ? <Eye size={13} /> : <EyeOff size={13} />}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {activeLayer ? (
+        <div className="active-mask-editor">
+          <div className="mask-editor-toolbar">
+            <button
+              type="button"
+              className={activeTool === "mask" ? "active" : ""}
+              onClick={() => onToolChange(activeTool === "mask" ? null : "mask")}
+            ><Brush size={13} />编辑选区</button>
+            <button
+              type="button"
+              className={overlayVisible ? "active" : ""}
+              onClick={() => onOverlayVisibleChange(!overlayVisible)}
+            ><Layers size={13} />叠加</button>
+            <button
+              type="button"
+              className={activeLayer.invert ? "active" : ""}
+              onClick={() => updateLayer(activeLayer.id, { invert: !activeLayer.invert })}
+            >反相</button>
+            <button
+              type="button"
+              aria-label="删除当前蒙版"
+              onClick={() => {
+                const next = layers.filter((layer) => layer.id !== activeLayer.id);
+                updateLayers(next);
+                onActiveMaskChange(next.at(-1)?.id || null);
+                if (!next.length) onToolChange(null);
+              }}
+            ><Trash2 size={13} /></button>
+          </div>
+          {activeTool === "mask" && (
+            <div className="mask-brush-controls">
+              <div className="mask-mode-control" role="group" aria-label="画笔合并方式">
+                <button type="button" className={paintMode === "add" ? "active" : ""} onClick={() => onPaintModeChange("add")}>添加</button>
+                <button type="button" className={paintMode === "subtract" ? "active" : ""} onClick={() => onPaintModeChange("subtract")}>减去</button>
+              </div>
+              <Range label="大小" value={brushSettings.size} min={1} max={100} signed={false} onChange={(size) => onBrushSettingsChange({ ...brushSettings, size })} />
+              <Range label="羽化" value={brushSettings.feather} min={0} max={100} signed={false} onChange={(feather) => onBrushSettingsChange({ ...brushSettings, feather })} />
+              <p>在中间照片上拖动绘制；红色叠加表示当前选区。</p>
+            </div>
+          )}
+          <div className="mask-local-adjustments">
+            {LOCAL_ADJUSTMENT_CONTROLS.map(([label, key, min, max, step, decimals]) => (
+              <Range
+                key={key}
+                label={label}
+                value={activeLayer.adjustments?.[key] ?? DEFAULT_MASK_ADJUSTMENTS[key]}
+                min={min}
+                max={max}
+                step={step}
+                decimals={decimals}
+                onChange={(value) => updateLayer(activeLayer.id, {
+                  adjustments: { ...activeLayer.adjustments, [key]: value },
+                })}
+              />
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="inspector-empty-copy">创建画笔、渐变或语义蒙版后，可独立调整局部影调与颜色。</p>
+      )}
+    </InspectorDisclosure>
+  );
+}
+
+function GeometryPanel({ settings, disabled, onChange, activeTool, onToolChange, imageSize }) {
+  const geometry = settings.geometry || defaultGeometrySettings();
+  const update = (patch) => onChange({
+    geometry: { ...geometry, ...patch },
+    preset: "custom",
+  });
+  const setAspect = (aspect) => update({
+    aspect,
+    crop: cropForAspect(aspect, imageSize.width || 1, imageSize.height || 1, geometry.crop),
+  });
+  return (
+    <InspectorDisclosure title="裁切与透视" meta="几何校正" className="geometry-section">
+      <div className="geometry-tool-heading">
+        <button
+          type="button"
+          className={activeTool === "crop" ? "active" : ""}
+          disabled={disabled}
+          onClick={() => onToolChange(activeTool === "crop" ? null : "crop")}
+        ><Crop size={14} />{activeTool === "crop" ? "完成裁切" : "在画面中裁切"}</button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange({ geometry: defaultGeometrySettings(), preset: "custom" })}
+        ><ArrowCounterClockwise size={13} />重置</button>
+      </div>
+      <div className="aspect-presets" role="group" aria-label="裁切比例">
+        {["original", "free", "1:1", "4:5", "16:9"].map((aspect) => (
+          <button key={aspect} type="button" className={geometry.aspect === aspect ? "active" : ""} disabled={disabled} onClick={() => setAspect(aspect)}>
+            {{ original: "原始", free: "自由" }[aspect] || aspect}
+          </button>
+        ))}
+      </div>
+      <Range label="旋转" value={geometry.rotation || 0} min={-45} max={45} step={0.1} decimals={1} disabled={disabled} onChange={(rotation) => update({ rotation })} />
+      <Range label="垂直透视" value={geometry.vertical || 0} min={-100} max={100} disabled={disabled} onChange={(vertical) => update({ vertical })} />
+      <Range label="水平透视" value={geometry.horizontal || 0} min={-100} max={100} disabled={disabled} onChange={(horizontal) => update({ horizontal })} />
+      <Range label="缩放" value={geometry.scale || 100} min={100} max={200} signed={false} disabled={disabled} onChange={(scale) => update({ scale })} />
+      <Range label="水平偏移" value={geometry.offsetX || 0} min={-100} max={100} disabled={disabled} onChange={(offsetX) => update({ offsetX })} />
+      <Range label="垂直偏移" value={geometry.offsetY || 0} min={-100} max={100} disabled={disabled} onChange={(offsetY) => update({ offsetY })} />
+      <p className="geometry-help"><Move size={12} />裁切框可拖动和缩放；几何结果会同步用于原尺寸批量导出。</p>
+    </InspectorDisclosure>
+  );
+}
+
 export function App({ onLogout, session, username = "本机用户" }) {
   const [references, setReferences] = useState([]);
   const [referenceStats, setReferenceStats] = useState(null);
@@ -1711,6 +1986,11 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const [stagePreviewSplit, setStagePreviewSplit] = useState(50);
   const [stagePreviewZoom, setStagePreviewZoom] = useState(1);
   const [stagePreviewPan, setStagePreviewPan] = useState({ x: 0, y: 0 });
+  const [activeTool, setActiveTool] = useState(null);
+  const [activeMaskId, setActiveMaskId] = useState(null);
+  const [maskPaintMode, setMaskPaintMode] = useState("add");
+  const [maskBrushSettings, setMaskBrushSettings] = useState({ size: 18, feather: 70, flow: 100 });
+  const [maskOverlayVisible, setMaskOverlayVisible] = useState(true);
   const [dragImportActive, setDragImportActive] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [decodeStatus, setDecodeStatus] = useState("");
@@ -1749,6 +2029,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
   });
   const originalCanvas = useRef(null);
   const styledCanvas = useRef(null);
+  const maskOverlayCanvas = useRef(null);
+  const photoStageRef = useRef(null);
   const stageOriginalPreviewCanvas = useRef(null);
   const stageStyledPreviewCanvas = useRef(null);
   const stagePreviewViewport = useRef(null);
@@ -1756,15 +2038,19 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const stagePreviewPointers = useRef(new Map());
   const stagePreviewGesture = useRef(null);
   const styledBase = useRef(null);
+  const originalBase = useRef(null);
   const styledPreviewBase = useRef(null);
   const colorPlanePreviewBase = useRef(null);
   const curveAdjustedPreviewBase = useRef(null);
   const styledOutput = useRef(null);
   const curvePreviewOutput = useRef(null);
   const semanticMaskCache = useRef(new Map());
+  const currentSemanticMasks = useRef(null);
   const styleLutCache = useRef(new Map());
   const selectionAnchor = useRef(null);
   const stagePointer = useRef(null);
+  const editPointer = useRef(null);
+  const splitBeforeTool = useRef(50);
   const dragDepth = useRef(0);
   const referenceInput = useRef(null);
   const targetInput = useRef(null);
@@ -1774,6 +2060,15 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const active = targets.find((item) => item.id === activeId) || targets[0] || null;
   activePhotoIdRef.current = active?.id || null;
   const settings = active?.settings || defaultSettings();
+  const previewSettings = activeTool === "crop"
+    ? {
+      ...settings,
+      geometry: {
+        ...(settings.geometry || defaultGeometrySettings()),
+        crop: { x: 0, y: 0, width: 1, height: 1 },
+      },
+    }
+    : settings;
   const selectedTargets = useMemo(() => {
     const selected = new Set(selectedTargetIds);
     const matches = targets.filter((item) => selected.has(item.id));
@@ -2168,10 +2463,10 @@ export function App({ onLogout, session, username = "本机用户" }) {
     return {
       id: crypto.randomUUID(),
       name,
-      formatVersion: 5,
+      formatVersion: 6,
       stats: { ...referenceStats, version: Math.max(4, referenceStats?.version || 0) },
       luts,
-      settings: active ? settings : null,
+      settings: active ? transferableStyleSettings(settings) : null,
       palette: makePalette(referenceStats),
       createdAt: Date.now(),
     };
@@ -2206,10 +2501,20 @@ export function App({ onLogout, session, username = "本机用户" }) {
     setReferenceStats(item.stats);
     setReferences([]);
     if (item.settings && active) {
+      const incoming = transferableStyleSettings(item.settings);
+      const currentLayers = (settings.masks?.layers || [])
+        .filter((layer) => !layer.styleOriginId);
+      const styleLayers = (incoming.masks?.layers || []).map((layer, index) => ({
+        ...layer,
+        id: `style-${item.id}-${index}`,
+        styleOriginId: item.id,
+      }));
       updateActiveSettings({
-        ...item.settings,
-        colorPlane: normalizeColorPlaneSettings(item.settings.colorPlane),
-        curves: item.settings.curves || structuredClone(DEFAULT_CURVES),
+        ...incoming,
+        masks: { layers: [...currentLayers, ...styleLayers] },
+        geometry: settings.geometry || defaultGeometrySettings(),
+        colorPlane: normalizeColorPlaneSettings(incoming.colorPlane),
+        curves: incoming.curves || structuredClone(DEFAULT_CURVES),
         preset: "custom",
       });
     }
@@ -2276,12 +2581,19 @@ export function App({ onLogout, session, username = "本机用户" }) {
   }
 
   async function renderTargetExport(target, targetIndex, totalTargets) {
-    const longEdge = {
+    const requestedLongEdge = {
       original: Number.POSITIVE_INFINITY,
       "4k": 3840,
       "2k": 2560,
       "1080p": 1920,
     }[exportOptions.resolution];
+    const targetSettings = target.settings || defaultSettings();
+    const longEdge = sourceLongEdgeForCroppedOutput(
+      requestedLongEdge,
+      target.metadata?.width,
+      target.metadata?.height,
+      targetSettings.geometry,
+    );
     const mime = {
       jpeg: "image/jpeg",
       png: "image/png",
@@ -2336,11 +2648,19 @@ export function App({ onLogout, session, username = "本机用户" }) {
       } else {
         image = await loadImage(target.url);
       }
-      const scale = Number.isFinite(longEdge)
-        ? Math.min(1, longEdge / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height))
+      const imageWidth = image.naturalWidth || image.width;
+      const imageHeight = image.naturalHeight || image.height;
+      const effectiveLongEdge = sourceLongEdgeForCroppedOutput(
+        requestedLongEdge,
+        imageWidth,
+        imageHeight,
+        targetSettings.geometry,
+      );
+      const scale = Number.isFinite(effectiveLongEdge)
+        ? Math.min(1, effectiveLongEdge / Math.max(imageWidth, imageHeight))
         : 1;
-      source.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
-      source.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+      source.width = Math.max(1, Math.round(imageWidth * scale));
+      source.height = Math.max(1, Math.round(imageHeight * scale));
       const context = source.getContext("2d", { willReadFrequently: true });
       context.imageSmoothingEnabled = true;
       context.imageSmoothingQuality = "high";
@@ -2376,7 +2696,6 @@ export function App({ onLogout, session, username = "本机用户" }) {
       },
       { photoId: `export-analysis:${target.id}` },
     );
-    const targetSettings = target.settings || defaultSettings();
     const styleLuts = await getStyleLuts(
       sourceProfile,
       referenceStats || sourceProfile,
@@ -2725,39 +3044,55 @@ export function App({ onLogout, session, username = "本机用户" }) {
     if (!canvas) return;
     const curves = { ...settings.curves, [channel]: points };
     if (base?.photoId === active?.id) {
-      renderCurveBase(base, curves, canvas, curvePreviewOutput);
+      renderCurveBase(
+        base,
+        curves,
+        canvas,
+        curvePreviewOutput,
+        previewSettings,
+        currentSemanticMasks.current,
+      );
     }
     else {
       const fallback = styledPreviewBase.current || styledBase.current;
       if (fallback?.photoId === active?.id) {
-        renderAdjustedBase(fallback, settings, curves, canvas, curvePreviewOutput);
+        renderAdjustedBase(
+          fallback,
+          previewSettings,
+          curves,
+          canvas,
+          curvePreviewOutput,
+          currentSemanticMasks.current,
+        );
       }
     }
   }
 
-  function previewBasic(previewSettings) {
+  function previewBasic(nextSettings) {
     const base = styledPreviewBase.current || styledBase.current;
     const canvas = styledCanvas.current;
     if (!base || base.photoId !== active?.id || !canvas) return;
     renderAdjustedBase(
       base,
-      previewSettings,
+      nextSettings,
       settings.curves,
       canvas,
       curvePreviewOutput,
+      currentSemanticMasks.current,
     );
   }
 
-  function previewColorPlane(previewSettings) {
+  function previewColorPlane(nextSettings) {
     const base = colorPlanePreviewBase.current || styledPreviewBase.current || styledBase.current;
     const canvas = styledCanvas.current;
     if (!base || base.photoId !== active?.id || !canvas) return;
     renderAdjustedBase(
       base,
-      previewSettings,
+      nextSettings,
       settings.curves,
       canvas,
       curvePreviewOutput,
+      currentSemanticMasks.current,
     );
   }
 
@@ -2781,6 +3116,8 @@ export function App({ onLogout, session, username = "本机用户" }) {
       curveAdjustedPreviewBase.current = null;
       styledOutput.current = null;
       curvePreviewOutput.current = null;
+      originalBase.current = null;
+      currentSemanticMasks.current = null;
       const canvas = styledCanvas.current;
       canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
       canvas.dataset.photoId = photoId;
@@ -2797,6 +3134,12 @@ export function App({ onLogout, session, username = "本机用户" }) {
         styledCanvas.current.dataset.photoId = photoId;
         const imageData = originalContext.getImageData(0, 0, originalCanvas.current.width, originalCanvas.current.height);
         const data = imageData.data;
+        originalBase.current = {
+          data: new Uint8ClampedArray(data),
+          width: imageData.width,
+          height: imageData.height,
+          photoId,
+        };
         const commitBase = (pixels) => {
           const base = {
             data: new Uint8ClampedArray(pixels),
@@ -2812,10 +3155,11 @@ export function App({ onLogout, session, username = "本机用户" }) {
           curvePreviewOutput.current = null;
           renderAdjustedBase(
             styledPreviewBase.current || base,
-            settings,
+            previewSettings,
             settings.curves,
             styledCanvas.current,
             curvePreviewOutput,
+            currentSemanticMasks.current,
           );
           setBaseRevision((value) => value + 1);
         };
@@ -2833,6 +3177,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
           if (cancelled || activePhotoIdRef.current !== photoId) return;
           semanticMaskCache.current.set(maskKey, semanticMasks);
         }
+        currentSemanticMasks.current = semanticMasks;
         let source = active.stats;
         if (!source) {
           source = await engineWorker.run(
@@ -2924,16 +3269,19 @@ export function App({ onLogout, session, username = "本机用户" }) {
         };
       }
     });
+    const renderBase = activeTool
+      ? colorPlanePreviewBase.current || styledPreviewBase.current || base
+      : base;
     RENDER_PIPELINE.renderBasic(
       {
-        data: new Uint8ClampedArray(base.data),
-        width: base.width,
-        height: base.height,
+        data: new Uint8ClampedArray(renderBase.data),
+        width: renderBase.width,
+        height: renderBase.height,
         settings,
         curves: settings.curves,
       },
       { photoId: `render:${active?.id || "preview"}` },
-    ).then((result) => {
+    ).then(async (result) => {
       if (cancelled || activePhotoIdRef.current !== photoId) return;
       setActiveBackend(
         result.backend === "webgpu"
@@ -2942,27 +3290,58 @@ export function App({ onLogout, session, username = "本机用户" }) {
             ? "WebGL 2"
             : "Worker CPU",
       );
-      styledOutput.current = result.data;
-      if (canvas.width !== result.width) canvas.width = result.width;
-      if (canvas.height !== result.height) canvas.height = result.height;
-      canvas.getContext("2d").putImageData(
-        new ImageData(result.data, result.width, result.height),
-        0,
-        0,
-      );
-      setDisplayHistogram(result.histogram);
+      const workerInput = new Uint8ClampedArray(result.data);
+      let finalFrame;
+      try {
+        finalFrame = await engineWorker.run(
+          "finalize-preview",
+          {
+            data: workerInput,
+            width: result.width,
+            height: result.height,
+            settings: {
+              masks: previewSettings.masks,
+              geometry: previewSettings.geometry,
+            },
+            semanticMasks: currentSemanticMasks.current,
+          },
+          {
+            photoId: `finalize:${photoId}`,
+            transfer: [workerInput.buffer],
+          },
+        );
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        finalFrame = finalizePreviewFrame(
+          new Uint8ClampedArray(result.data),
+          result.width,
+          result.height,
+          previewSettings,
+          currentSemanticMasks.current,
+        );
+        finalFrame.histogram = await engineWorker.run(
+          "histogram",
+          { data: new Uint8ClampedArray(finalFrame.data) },
+          { photoId: `histogram:${photoId}` },
+        ).catch(() => null);
+      }
+      if (cancelled || activePhotoIdRef.current !== photoId) return;
+      styledOutput.current = finalFrame.data;
+      putFrameOnCanvas(finalFrame, canvas);
+      if (finalFrame.histogram) setDisplayHistogram(finalFrame.histogram);
     }).catch((error) => {
       if (cancelled || activePhotoIdRef.current !== photoId || error?.name === "AbortError") return;
       const output = renderAdjustedBase(
         base,
-        settings,
+        previewSettings,
         settings.curves,
         canvas,
         styledOutput,
+        currentSemanticMasks.current,
       );
       engineWorker.run(
         "histogram",
-        { data: new Uint8ClampedArray(output) },
+        { data: new Uint8ClampedArray(output.data) },
         { photoId: `histogram:${active?.id || "preview"}` },
       ).then((histogram) => {
         if (!cancelled && activePhotoIdRef.current === photoId) setDisplayHistogram(histogram);
@@ -2996,9 +3375,307 @@ export function App({ onLogout, session, username = "本机用户" }) {
     settings.grainHighlights,
     settings.colorPlane,
     settings.curves,
+    settings.masks,
+    settings.geometry,
+    activeTool,
     basicDragging,
     curveDragging,
   ]);
+
+  useEffect(() => {
+    const base = originalBase.current;
+    const canvas = originalCanvas.current;
+    if (!base || base.photoId !== active?.id || !canvas) return;
+    const frame = applyGeometryTransform(
+      new Uint8ClampedArray(base.data),
+      base.width,
+      base.height,
+      previewSettings.geometry,
+    );
+    putFrameOnCanvas(frame, canvas);
+  }, [active?.id, settings.geometry, activeTool, baseRevision]);
+
+  useEffect(() => {
+    const canvas = maskOverlayCanvas.current;
+    const base = originalBase.current;
+    if (!canvas || !base || base.photoId !== active?.id) return;
+    const context = canvas.getContext("2d");
+    if (activeTool === "crop") {
+      canvas.width = base.width;
+      canvas.height = base.height;
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      const crop = settings.geometry?.crop || defaultGeometrySettings().crop;
+      const x = crop.x * canvas.width;
+      const y = crop.y * canvas.height;
+      const width = crop.width * canvas.width;
+      const height = crop.height * canvas.height;
+      context.fillStyle = "rgba(0,0,0,.56)";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.clearRect(x, y, width, height);
+      context.strokeStyle = "rgba(255,255,255,.96)";
+      context.lineWidth = Math.max(1, canvas.width / 900);
+      context.strokeRect(x, y, width, height);
+      context.strokeStyle = "rgba(255,255,255,.42)";
+      for (let step = 1; step < 3; step += 1) {
+        context.beginPath();
+        context.moveTo(x + width * step / 3, y);
+        context.lineTo(x + width * step / 3, y + height);
+        context.moveTo(x, y + height * step / 3);
+        context.lineTo(x + width, y + height * step / 3);
+        context.stroke();
+      }
+      const overlay = context.getImageData(0, 0, canvas.width, canvas.height);
+      const frame = applyGeometryTransform(
+        overlay.data,
+        overlay.width,
+        overlay.height,
+        previewSettings.geometry,
+        { edgeMode: "transparent" },
+      );
+      putFrameOnCanvas(frame, canvas);
+      return;
+    }
+    const layer = settings.masks?.layers?.find((item) => item.id === activeMaskId);
+    if (activeTool !== "mask" || !maskOverlayVisible || !layer) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      canvas.width = 1;
+      canvas.height = 1;
+      return;
+    }
+    const imageData = maskOverlayImageData(
+      layer,
+      base.width,
+      base.height,
+      currentSemanticMasks.current,
+    );
+    const frame = applyGeometryTransform(
+      imageData.data,
+      imageData.width,
+      imageData.height,
+      previewSettings.geometry,
+      { edgeMode: "transparent" },
+    );
+    putFrameOnCanvas(frame, canvas);
+  }, [active?.id, activeTool, activeMaskId, maskOverlayVisible, settings.masks, settings.geometry, baseRevision]);
+
+  useEffect(() => {
+    const layers = settings.masks?.layers || [];
+    if (activeMaskId && layers.some((layer) => layer.id === activeMaskId)) return;
+    setActiveMaskId(layers.at(-1)?.id || null);
+  }, [active?.id, settings.masks, activeMaskId]);
+
+  function setEditingTool(tool) {
+    if (tool && !activeTool) splitBeforeTool.current = split;
+    setActiveTool(tool);
+    if (tool) setSplit(100);
+    else if (activeTool) setSplit(splitBeforeTool.current);
+  }
+
+  function normalizedStagePoint(event) {
+    const stage = photoStageRef.current || event.currentTarget;
+    const rect = stage.getBoundingClientRect();
+    const base = originalBase.current;
+    if (!base || !rect.width || !rect.height) return null;
+    const outputWidth = styledCanvas.current?.width || base.width;
+    const outputHeight = styledCanvas.current?.height || base.height;
+    const scale = Math.min(rect.width / outputWidth, rect.height / outputHeight);
+    const displayWidth = outputWidth * scale;
+    const displayHeight = outputHeight * scale;
+    const left = rect.left + (rect.width - displayWidth) / 2;
+    const top = rect.top + (rect.height - displayHeight) / 2;
+    const outputPoint = {
+      x: (event.clientX - left) / displayWidth,
+      y: (event.clientY - top) / displayHeight,
+    };
+    if (outputPoint.x < 0 || outputPoint.x > 1 || outputPoint.y < 0 || outputPoint.y > 1) return null;
+    const sourcePoint = mapGeometryOutputPointToSource(outputPoint, previewSettings.geometry);
+    if (sourcePoint.x < 0 || sourcePoint.x > 1 || sourcePoint.y < 0 || sourcePoint.y > 1) return null;
+    return { x: clamp(sourcePoint.x, 0, 1), y: clamp(sourcePoint.y, 0, 1) };
+  }
+
+  function updateMaskSource(layerId, sourceId, points) {
+    setTargets((items) => items.map((item) => {
+      if (item.id !== activePhotoIdRef.current) return item;
+      const masks = item.settings?.masks || { layers: [] };
+      return {
+        ...item,
+        settings: {
+          ...item.settings,
+          preset: "custom",
+          masks: {
+            ...masks,
+            layers: masks.layers.map((layer) => layer.id === layerId
+              ? {
+                ...layer,
+                sources: layer.sources.map((source) => source.id === sourceId
+                  ? { ...source, points: [...points] }
+                  : source),
+              }
+              : layer),
+          },
+        },
+      };
+    }));
+  }
+
+  function updateMaskSourcePatch(layerId, sourceId, patch) {
+    setTargets((items) => items.map((item) => {
+      if (item.id !== activePhotoIdRef.current) return item;
+      const masks = item.settings?.masks || { layers: [] };
+      return {
+        ...item,
+        settings: {
+          ...item.settings,
+          preset: "custom",
+          masks: {
+            ...masks,
+            layers: masks.layers.map((layer) => layer.id === layerId
+              ? {
+                ...layer,
+                sources: layer.sources.map((source) => source.id === sourceId
+                  || (!source.id && source.type === patch.type)
+                  ? { ...source, ...patch }
+                  : source),
+              }
+              : layer),
+          },
+        },
+      };
+    }));
+  }
+
+  function beginEditInteraction(event) {
+    const point = normalizedStagePoint(event);
+    if (!point) return false;
+    if (activeTool === "mask") {
+      const layer = settings.masks?.layers?.find((item) => item.id === activeMaskId);
+      if (!layer) return false;
+      if (layer.type === "linear") {
+        const source = layer.sources.find((item) => item.type === "linear");
+        if (source) {
+          updateMaskSourcePatch(layer.id, source.id, { type: "linear", start: point, end: point });
+          editPointer.current = { type: "linear", pointerId: event.pointerId, layerId: layer.id, sourceId: source.id, start: point };
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          return true;
+        }
+      }
+      if (layer.type === "radial") {
+        const source = layer.sources.find((item) => item.type === "radial");
+        if (source) {
+          updateMaskSourcePatch(layer.id, source.id, { type: "radial", center: point, radiusX: 0.01, radiusY: 0.01 });
+          editPointer.current = { type: "radial", pointerId: event.pointerId, layerId: layer.id, sourceId: source.id, start: point };
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          return true;
+        }
+      }
+      const source = {
+        id: `stroke-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        type: "brush",
+        mode: maskPaintMode,
+        ...maskBrushSettings,
+        points: [point],
+      };
+      updateActiveSettings({
+        masks: {
+          ...(settings.masks || {}),
+          layers: settings.masks.layers.map((item) => item.id === layer.id
+            ? { ...item, sources: [...(item.sources || []), source] }
+            : item),
+        },
+        preset: "custom",
+      });
+      editPointer.current = { type: "mask", pointerId: event.pointerId, layerId: layer.id, sourceId: source.id, points: [point] };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      return true;
+    }
+    if (activeTool === "crop") {
+      const crop = settings.geometry?.crop || defaultGeometrySettings().crop;
+      const threshold = 0.035;
+      const nearLeft = Math.abs(point.x - crop.x) <= threshold;
+      const nearRight = Math.abs(point.x - (crop.x + crop.width)) <= threshold;
+      const nearTop = Math.abs(point.y - crop.y) <= threshold;
+      const nearBottom = Math.abs(point.y - (crop.y + crop.height)) <= threshold;
+      const inside = point.x >= crop.x && point.x <= crop.x + crop.width
+        && point.y >= crop.y && point.y <= crop.y + crop.height;
+      if (!inside && !nearLeft && !nearRight && !nearTop && !nearBottom) return true;
+      editPointer.current = {
+        type: "crop",
+        pointerId: event.pointerId,
+        start: point,
+        initial: { ...crop },
+        edges: { left: nearLeft, right: nearRight, top: nearTop, bottom: nearBottom },
+      };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      return true;
+    }
+    return false;
+  }
+
+  function moveEditInteraction(event) {
+    const interaction = editPointer.current;
+    if (!interaction || interaction.pointerId !== event.pointerId) return false;
+    const point = normalizedStagePoint(event);
+    if (!point) return true;
+    if (interaction.type === "mask") {
+      const previous = interaction.points.at(-1);
+      if (Math.hypot(point.x - previous.x, point.y - previous.y) >= 0.003) {
+        interaction.points.push(point);
+        updateMaskSource(interaction.layerId, interaction.sourceId, interaction.points);
+      }
+      return true;
+    }
+    if (interaction.type === "linear") {
+      updateMaskSourcePatch(interaction.layerId, interaction.sourceId, {
+        type: "linear",
+        start: interaction.start,
+        end: point,
+      });
+      return true;
+    }
+    if (interaction.type === "radial") {
+      updateMaskSourcePatch(interaction.layerId, interaction.sourceId, {
+        type: "radial",
+        center: interaction.start,
+        radiusX: Math.max(0.01, Math.abs(point.x - interaction.start.x)),
+        radiusY: Math.max(0.01, Math.abs(point.y - interaction.start.y)),
+      });
+      return true;
+    }
+    const dx = point.x - interaction.start.x;
+    const dy = point.y - interaction.start.y;
+    const initial = interaction.initial;
+    let crop = { ...initial };
+    const resizing = Object.values(interaction.edges).some(Boolean);
+    if (!resizing) {
+      crop.x = clamp(initial.x + dx, 0, 1 - initial.width);
+      crop.y = clamp(initial.y + dy, 0, 1 - initial.height);
+    } else {
+      if (interaction.edges.left) {
+        const right = initial.x + initial.width;
+        crop.x = clamp(initial.x + dx, 0, right - 0.05);
+        crop.width = right - crop.x;
+      }
+      if (interaction.edges.right) crop.width = clamp(initial.width + dx, 0.05, 1 - initial.x);
+      if (interaction.edges.top) {
+        const bottom = initial.y + initial.height;
+        crop.y = clamp(initial.y + dy, 0, bottom - 0.05);
+        crop.height = bottom - crop.y;
+      }
+      if (interaction.edges.bottom) crop.height = clamp(initial.height + dy, 0.05, 1 - initial.y);
+    }
+    updateActiveSettings({
+      geometry: { ...(settings.geometry || defaultGeometrySettings()), aspect: "free", crop },
+      preset: "custom",
+    });
+    return true;
+  }
+
+  function finishEditInteraction(event) {
+    if (!editPointer.current || editPointer.current.pointerId !== event.pointerId) return false;
+    editPointer.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    return true;
+  }
 
   function updateSplit(event) {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -3018,6 +3695,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
 
   function beginStageInteraction(event) {
     if (!active || event.button !== 0) return;
+    if (beginEditInteraction(event)) return;
     stagePointer.current = {
       x: event.clientX,
       y: event.clientY,
@@ -3028,6 +3706,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   }
 
   function moveStageInteraction(event) {
+    if (moveEditInteraction(event)) return;
     const interaction = stagePointer.current;
     if (!interaction) return;
     if (!interaction.moved) {
@@ -3040,6 +3719,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   }
 
   function finishStageInteraction(event) {
+    if (finishEditInteraction(event)) return;
     const interaction = stagePointer.current;
     stagePointer.current = null;
     setDragging(false);
@@ -3049,6 +3729,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   }
 
   function cancelStageInteraction() {
+    editPointer.current = null;
     stagePointer.current = null;
     setDragging(false);
   }
@@ -3193,7 +3874,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   return (
     <main className="app-shell editor-shell">
       <header className="topbar">
-        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 5</small></div>
+        <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 5.1</small></div>
         <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
         <div className="header-actions">
           <GlassButton
@@ -3416,29 +4097,36 @@ export function App({ onLogout, session, username = "本机用户" }) {
 
         <section className="canvas-column">
           <div
-            className={`photo-stage ${active ? "has-photo" : ""} ${dragging ? "dragging" : ""}`}
+            ref={photoStageRef}
+            className={`photo-stage ${active ? "has-photo" : ""} ${dragging ? "dragging" : ""} ${activeTool ? `editing-${activeTool}` : ""}`}
             onPointerDown={beginStageInteraction}
             onPointerMove={moveStageInteraction}
             onPointerUp={finishStageInteraction}
             onPointerCancel={cancelStageInteraction}
-            title={active ? "点击放大查看细节；拖动可调整前后对比" : undefined}
+            title={active ? (activeTool === "mask" ? "拖动绘制当前蒙版" : activeTool === "crop" ? "拖动裁切框或边缘" : "点击放大查看细节；拖动可调整前后对比") : undefined}
           >
             {active ? (
               <>
                 <canvas ref={originalCanvas} className="photo-canvas original" />
                 <div className="styled-clip" style={{ width: `${split}%` }}><canvas ref={styledCanvas} className="photo-canvas styled" /></div>
-                <div className="split-line" style={{ left: `${split}%` }}><span>‹›</span></div>
-                <span className="image-label styled-label">调色后</span>
-                <span className="image-label original-label">原图</span>
+                <canvas ref={maskOverlayCanvas} className="photo-edit-overlay" aria-hidden="true" />
+                {!activeTool && <div className="split-line" style={{ left: `${split}%` }}><span>‹›</span></div>}
+                {!activeTool && <span className="image-label styled-label">调色后</span>}
+                {!activeTool && <span className="image-label original-label">原图</span>}
+                {activeTool && (
+                  <span className="image-label tool-label glass-surface">
+                    {activeTool === "mask" ? "蒙版编辑" : "裁切与透视"}
+                  </span>
+                )}
                 <button
                   type="button"
                   className="stage-expand-button glass-surface"
                   aria-label="放大查看当前照片细节"
                   onPointerDown={(event) => event.stopPropagation()}
-                  onClick={openStagePreview}
+                  onClick={activeTool ? () => setEditingTool(null) : openStagePreview}
                 >
-                  <Maximize2 size={14} />
-                  <span>查看细节</span>
+                  {activeTool ? <CircleCheck size={14} /> : <Maximize2 size={14} />}
+                  <span>{activeTool ? "完成" : "查看细节"}</span>
                 </button>
                 {active.raw && (
                   <span className={`raw-mode-label glass-surface ${active.metadata?.preview === "embedded" ? "fallback" : ""}`}>
@@ -3469,12 +4157,12 @@ export function App({ onLogout, session, username = "本机用户" }) {
               <span>风格强度</span>
               <small className={processing || curveDragging || basicDragging ? "engine-status active" : "engine-status"}>
                 {processing
-                  ? "正在构建 V5 颜色与质感…"
+                  ? "正在构建 V5.1 颜色与质感…"
                   : curveDragging
                     ? "曲线实时预览"
                     : basicDragging
                       ? "基本参数实时预览"
-                      : `${activeBackend} · V5 本地渲染`}
+                      : `${activeBackend} · V5.1 本地渲染`}
               </small>
               <strong>{settings.strength}%</strong>
             </div>
@@ -3555,6 +4243,33 @@ export function App({ onLogout, session, username = "本机用户" }) {
             onChange={updateActiveSettings}
             onPreview={previewBasic}
             onInteractionChange={handleBasicInteraction}
+          />
+          <MaskingPanel
+            settings={settings}
+            disabled={!active}
+            activeMaskId={activeMaskId}
+            onActiveMaskChange={setActiveMaskId}
+            onChange={updateActiveSettings}
+            activeTool={activeTool}
+            onToolChange={setEditingTool}
+            paintMode={maskPaintMode}
+            onPaintModeChange={setMaskPaintMode}
+            brushSettings={maskBrushSettings}
+            onBrushSettingsChange={setMaskBrushSettings}
+            overlayVisible={maskOverlayVisible}
+            onOverlayVisibleChange={setMaskOverlayVisible}
+            semanticReady={Boolean(currentSemanticMasks.current)}
+          />
+          <GeometryPanel
+            settings={settings}
+            disabled={!active}
+            onChange={updateActiveSettings}
+            activeTool={activeTool}
+            onToolChange={setEditingTool}
+            imageSize={{
+              width: originalBase.current?.width || active?.metadata?.width || 1,
+              height: originalBase.current?.height || active?.metadata?.height || 1,
+            }}
           />
           <ColorPlaneEditor
             settings={settings}
@@ -3982,7 +4697,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
                     </GlassButton>
                   </div>
                 </div>
-                <label className="field-label">像素大小<select value={exportOptions.resolution} onChange={(event) => setExportOptions({ ...exportOptions, resolution: event.target.value })}><option value="original">原始完整尺寸</option><option value="4k">4K · 最长边 3840</option><option value="2k">2K · 最长边 2560</option><option value="1080p">1080p · 最长边 1920</option></select></label>
+                <label className="field-label">成片像素大小<select value={exportOptions.resolution} onChange={(event) => setExportOptions({ ...exportOptions, resolution: event.target.value })}><option value="original">原始裁切尺寸</option><option value="4k">4K · 成片最长边 3840</option><option value="2k">2K · 成片最长边 2560</option><option value="1080p">1080p · 成片最长边 1920</option></select></label>
                 <label className="field-label">图片格式<select value={exportOptions.format} onChange={(event) => setExportOptions({ ...exportOptions, format: event.target.value })}><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option><option value="bmp">BMP</option></select></label>
                 <label className="field-label full">质量 <span>{exportOptions.quality}%</span><input type="range" min="50" max="100" value={exportOptions.quality} disabled={!["jpeg", "webp"].includes(exportOptions.format)} onChange={(event) => setExportOptions({ ...exportOptions, quality: Number(event.target.value) })} /></label>
               </div>
@@ -3991,13 +4706,13 @@ export function App({ onLogout, session, username = "本机用户" }) {
               <div>
                 <span className="preset-export-badge">DIRECT PRESET EXPORT</span>
                 <strong>带走这套颜色，在专业软件继续编辑</strong>
-                <p>XMP 可用于 Lightroom / Camera Raw；33³ CUBE LUT 会写入 V5 全局色彩平面与明度层，可用于 Photoshop、DaVinci Resolve 等支持 LUT 的软件；CLSTYLE 保留完整 V5 语义与局部风格。</p>
-                <small>标准 CUBE 无法包含语义局部调整、质感和随机颗粒。</small>
+                <p>XMP 写入 Lightroom / Camera Raw 可识别的基本参数、总体与 RGB 曲线；33³ CUBE LUT 写入 V5 全局色彩平面与明度层；CLSTYLE 额外保留可在其他照片重新识别的主体与天空局部风格。</p>
+                <small>照片专属的笔刷、渐变、裁切与透视只会烘焙进成片，不会写入可迁移预设；标准 CUBE 也无法包含质感和随机颗粒。</small>
               </div>
               <div>
                 <GlassButton className="preset-primary" onClick={() => exportPreset("xmp")}>Lightroom XMP</GlassButton>
                 <GlassButton className="preset-primary" onClick={() => exportPreset("cube")}>33³ CUBE LUT</GlassButton>
-                <GlassButton onClick={exportClstyle}>完整 CLSTYLE</GlassButton>
+                <GlassButton onClick={exportClstyle}>可迁移 CLSTYLE</GlassButton>
               </div>
             </div>
             <div className="dialog-actions">
