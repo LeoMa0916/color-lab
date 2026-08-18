@@ -2572,6 +2572,46 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 
 .destination-clear:hover { color: #fff; }
 
+.prepared-export {
+  margin-top: 12px;
+  padding: 11px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(116, 166, 255, .28);
+  border-radius: 14px;
+  background:
+    linear-gradient(120deg, rgba(69, 121, 255, .15), transparent 60%),
+    rgba(255, 255, 255, .045);
+}
+
+.prepared-export > div,
+.prepared-export > div > span {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.prepared-export > div > span {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.prepared-export svg { flex: 0 0 auto; color: #8fb0ff; }
+.prepared-export strong { color: #f3f6ff; font-size: 11px; }
+.prepared-export small {
+  max-width: 280px;
+  overflow: hidden;
+  color: #8e96a5;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prepared-export .primary-button { flex: 0 0 auto; min-height: 36px; }
+
 .drag-import-overlay {
   position: fixed;
   inset: 10px;
@@ -3139,6 +3179,9 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
     flex-direction: column;
   }
   .export-destination > div:last-child { justify-content: flex-end; }
+  .prepared-export { align-items: stretch; flex-direction: column; }
+  .prepared-export .primary-button { width: 100%; justify-content: center; }
+  .prepared-export small { max-width: min(70vw, 360px); }
   .reference-preview-modal {
     max-height: calc(100dvh - 16px);
     padding: 12px;

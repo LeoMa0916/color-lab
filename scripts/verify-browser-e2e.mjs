@@ -524,8 +524,47 @@ try {
     input.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
   })()`);
   await waitFor(cdp, "document.querySelector('input[aria-label=\"导出质量\"]').value === '92'");
-  await evaluate(cdp, "document.querySelector('.export-modal .modal-title .mini-button').click()");
+  await evaluate(cdp, `(() => {
+    window.__exportWrites = [];
+    window.__directoryPermissionRequested = 0;
+    let permission = 'prompt';
+    window.showDirectoryPicker = async () => ({
+      kind: 'directory',
+      name: 'QA Export',
+      queryPermission: async () => permission,
+      requestPermission: async () => {
+        window.__directoryPermissionRequested += 1;
+        permission = 'granted';
+        return permission;
+      },
+      getFileHandle: async (name) => ({
+        createWritable: async () => ({
+          write: async (blob) => window.__exportWrites.push({ name, size: blob.size }),
+          close: async () => {},
+        }),
+      }),
+    });
+    document.querySelector('.export-destination .glass-button').click();
+  })()`);
+  await waitFor(cdp, "document.querySelector('.export-destination strong')?.textContent === 'QA Export'");
+  const directoryGrant = await evaluate(cdp, "window.__directoryPermissionRequested");
+  assert(directoryGrant === 1, "Export directory permission was not confirmed during selection");
+  await evaluate(cdp, `(() => {
+    const resolution = document.querySelectorAll('.export-grid select')[0];
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(resolution, '1080p');
+    resolution.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('.export-modal .dialog-actions .primary-button').click();
+  })()`);
+  await waitFor(
+    cdp,
+    "window.__exportWrites?.length === 2 && !document.querySelector('.global-progress')",
+    180000,
+  );
+  const directoryWrites = await evaluate(cdp, "window.__exportWrites");
+  assert(directoryWrites.every((file) => file.size > 1000), "Directory export wrote an empty image");
+  assert(directoryWrites.every((file) => /\.(jpg|png|webp|bmp)$/i.test(file.name)), "Directory export used an invalid image filename");
   await waitFor(cdp, "!document.querySelector('.export-modal')");
+  console.log("Desktop directory export verification passed", directoryWrites);
 
   await evaluate(cdp, `(() => {
     const transfer = new DataTransfer();
@@ -852,6 +891,10 @@ try {
     deviceScaleFactor: 1,
     mobile: true,
   });
+  await cdp.send("Emulation.setUserAgentOverride", {
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1",
+    platform: "iPhone",
+  });
   await cdp.send("Page.reload", { ignoreCache: true });
   await waitFor(cdp, "document.readyState === 'complete' && document.querySelector('.workspace')");
   if (!await evaluate(cdp, "Boolean(document.querySelector('.stage-expand-button'))")) {
@@ -868,6 +911,43 @@ try {
   })`);
   assert(mobile.width === 390, `Unexpected mobile viewport width: ${mobile.width}`);
   assert(mobile.scrollWidth === mobile.width, "Mobile layout overflows horizontally");
+  await evaluate(cdp, `(() => {
+    document.querySelector('.target-selection-actions button:last-child')?.click();
+    document.querySelector('.target-select')?.click();
+    window.__mobileShares = [];
+    Object.defineProperty(navigator, 'canShare', {
+      configurable: true,
+      value: ({ files }) => Boolean(files?.length),
+    });
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      value: async ({ files }) => {
+        window.__mobileShares.push(files.map((file) => ({ name: file.name, size: file.size })));
+      },
+    });
+    document.querySelector('.header-actions > .primary-button').click();
+  })()`);
+  await waitFor(cdp, "document.querySelector('.export-modal')");
+  await evaluate(cdp, `(() => {
+    const resolution = document.querySelectorAll('.export-grid select')[0];
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(resolution, '1080p');
+    resolution.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('.export-modal .dialog-actions .primary-button').click();
+  })()`);
+  await waitFor(
+    cdp,
+    "document.querySelector('[data-testid=\"prepared-export\"]') && !document.querySelector('.global-progress')",
+    180000,
+  );
+  assert(await evaluate(cdp, "window.__mobileShares.length === 0"), "Mobile export opened sharing without a fresh tap");
+  await evaluate(cdp, "document.querySelector('[data-testid=\"prepared-export\"] .primary-button').click()");
+  await waitFor(cdp, "window.__mobileShares.length === 1");
+  const mobileShare = await evaluate(cdp, "window.__mobileShares[0][0]");
+  assert(mobileShare.size > 1000, "Mobile share received an empty image");
+  assert(/\.(jpg|png|webp|bmp)$/i.test(mobileShare.name), "Mobile share received an invalid filename");
+  console.log("Mobile prepared export and share verification passed", mobileShare);
+  await evaluate(cdp, "document.querySelector('.export-modal .dialog-actions .glass-button').click()");
+  await waitFor(cdp, "!document.querySelector('.export-modal')");
   const mobileShot = await cdp.send("Page.captureScreenshot", {
     format: "png",
     captureBeyondViewport: false,

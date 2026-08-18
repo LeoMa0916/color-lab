@@ -699,13 +699,19 @@ function downloadCanvas(canvas, name, onDone) {
 }
 
 function saveBlob(blob, filename) {
+  if (!blob) throw new Error("没有可保存的导出文件");
   const anchor = document.createElement("a");
   anchor.download = filename;
   anchor.href = URL.createObjectURL(blob);
+  anchor.rel = "noopener";
+  anchor.style.display = "none";
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(anchor.href), 1800);
+  // Safari and slower mobile download managers can start reading the object
+  // URL well after the click handler has returned. Revoking it immediately can
+  // turn a valid export into a silent no-op.
+  window.setTimeout(() => URL.revokeObjectURL(anchor.href), 60000);
 }
 
 function safeFileStem(value, fallback = "ColorLab") {
@@ -718,15 +724,25 @@ function safeFileStem(value, fallback = "ColorLab") {
   return normalized || fallback;
 }
 
+async function ensureDirectoryWritePermission(directory, request = false) {
+  if (!directory || (directory.kind && directory.kind !== "directory")) {
+    throw new Error("所选位置不是可写文件夹");
+  }
+  if (!directory.queryPermission) return true;
+  const current = await directory.queryPermission({ mode: "readwrite" });
+  if (current === "granted") return true;
+  if (request && directory.requestPermission) {
+    const permission = await directory.requestPermission({ mode: "readwrite" });
+    if (permission === "granted") return true;
+  }
+  throw new Error("所选文件夹的写入权限已失效，请重新选择位置");
+}
+
 async function writeBlobToDirectory(directory, blob, filename) {
   if (!directory) return false;
-  if (directory.queryPermission) {
-    const current = await directory.queryPermission({ mode: "readwrite" });
-    const permission = current === "granted"
-      ? current
-      : await directory.requestPermission?.({ mode: "readwrite" });
-    if (permission !== "granted") throw new Error("未获得所选文件夹的写入权限");
-  }
+  // Permission prompts need a fresh user gesture. Selection confirms it up
+  // front; the slow render path only verifies that the grant is still valid.
+  await ensureDirectoryWritePermission(directory, false);
   const fileHandle = await directory.getFileHandle(filename, { create: true });
   const writable = await fileHandle.createWritable();
   try {
@@ -735,6 +751,14 @@ async function writeBlobToDirectory(directory, blob, filename) {
     await writable.close();
   }
   return true;
+}
+
+async function exportArtifact(files, archiveName) {
+  if (files.length === 1) return files[0];
+  return {
+    name: `${archiveName}-${files.length}张.zip`,
+    blob: await createZipBlob(files),
+  };
 }
 
 function droppedFiles(dataTransfer) {
@@ -2149,6 +2173,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   const [styleName, setStyleName] = useState("");
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportDirectory, setExportDirectory] = useState(null);
+  const [preparedExport, setPreparedExport] = useState(null);
   const [exportOptions, setExportOptions] = useState({
     name: "diaoseshi-export",
     resolution: "original",
@@ -2692,7 +2717,12 @@ export function App({ onLogout, session, username = "本机用户" }) {
         mode: "readwrite",
         startIn: "pictures",
       });
+      // Confirm the grant while this button click still owns a transient user
+      // activation. Requesting it after a long export is rejected by Chromium.
+      await ensureDirectoryWritePermission(handle, true);
       setExportDirectory(handle);
+      setPreparedExport(null);
+      setImportErrors([]);
     } catch (error) {
       if (error?.name !== "AbortError") {
         setImportErrors([`无法使用所选文件夹：${error?.message || "请检查浏览器权限"}`]);
@@ -2706,6 +2736,34 @@ export function App({ onLogout, session, username = "本机用户" }) {
       return;
     }
     saveBlob(blob, filename);
+  }
+
+  async function savePreparedExport() {
+    if (!preparedExport?.blob) return;
+    try {
+      const file = new File([preparedExport.blob], preparedExport.name, {
+        type: preparedExport.blob.type || "application/octet-stream",
+        lastModified: Date.now(),
+      });
+      if (
+        IS_MOBILE
+        && typeof navigator.share === "function"
+        && navigator.canShare?.({ files: [file] })
+      ) {
+        await navigator.share({
+          files: [file],
+          title: "Color Lab 导出",
+        });
+      } else {
+        saveBlob(preparedExport.blob, preparedExport.name);
+      }
+      setExported(`已交给系统保存：${preparedExport.name}`);
+      window.setTimeout(() => setExported(false), 4000);
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        setImportErrors([`保存失败：${error?.message || "请重新点按保存按钮"}`]);
+      }
+    }
   }
 
   async function renderTargetExport(target, targetIndex, totalTargets) {
@@ -2885,6 +2943,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
     const archiveName = safeFileStem(exportOptions.name, "ColorLab-batch");
     const exportedFiles = [];
     const duplicateNames = new Map();
+    setPreparedExport(null);
     setIsExporting(true);
     setProcessing(true);
     await waitForPaint();
@@ -2899,16 +2958,24 @@ export function App({ onLogout, session, username = "本机用户" }) {
         duplicateNames.set(sourceStem, occurrence);
         const stem = occurrence > 1 ? `${sourceStem}-${occurrence}` : sourceStem;
         const filename = `${stem}.${rendered.extension}`;
-        if (exportDirectory) {
-          await writeBlobToDirectory(exportDirectory, rendered.blob, filename);
-        } else {
-          exportedFiles.push({ name: filename, blob: rendered.blob });
-        }
+        exportedFiles.push({ name: filename, blob: rendered.blob });
       }
-      if (!exportDirectory) {
-        if (exportedFiles.length === 1) {
-          saveBlob(exportedFiles[0].blob, exportedFiles[0].name);
-        } else {
+      if (exportDirectory) {
+        try {
+          for (const file of exportedFiles) {
+            await writeBlobToDirectory(exportDirectory, file.blob, file.name);
+          }
+        } catch (error) {
+          setExportDirectory(null);
+          const artifact = await exportArtifact(exportedFiles, archiveName);
+          setPreparedExport(artifact);
+          setImportErrors([
+            `无法写入所选文件夹：${error?.message || "请检查浏览器权限"}。成片已生成，可点按“保存已生成文件”下载。`,
+          ]);
+          return;
+        }
+      } else {
+        if (exportedFiles.length > 1) {
           setBusyTask({
             kind: "export",
             label: `${exportedFiles.length} 张照片`,
@@ -2917,17 +2984,22 @@ export function App({ onLogout, session, username = "本机用户" }) {
             total: exportedFiles.length,
             progress: 98,
           });
-          saveBlob(
-            await createZipBlob(exportedFiles),
-            `${archiveName}-${exportedFiles.length}张.zip`,
-          );
         }
+        const artifact = await exportArtifact(exportedFiles, archiveName);
+        setPreparedExport(artifact);
+        // Desktop browsers normally accept this automatic hand-off. Keep the
+        // prepared file visible as a reliable retry path on every platform.
+        if (!IS_MOBILE) saveBlob(artifact.blob, artifact.name);
       }
-      setExportDialogOpen(false);
+      if (exportDirectory) setExportDialogOpen(false);
       setExported(
-        exportTargets.length > 1
-          ? `已导出 ${exportTargets.length} 张照片`
-          : "已导出当前照片",
+        exportDirectory
+          ? exportTargets.length > 1
+            ? `已写入 ${exportTargets.length} 张照片`
+            : "已写入当前照片"
+          : IS_MOBILE
+            ? "成片已生成，请点按保存或分享"
+            : "成片已生成；若下载未开始，请点按再次保存",
       );
       window.setTimeout(() => setExported(false), 4000);
     } catch (error) {
@@ -4874,6 +4946,21 @@ export function App({ onLogout, session, username = "本机用户" }) {
                 <label className="field-label">图片格式<select value={exportOptions.format} onChange={(event) => setExportOptions({ ...exportOptions, format: event.target.value })}><option value="jpeg">JPEG</option><option value="png">PNG</option><option value="webp">WebP</option><option value="bmp">BMP</option></select></label>
                 <label className="field-label full">质量 <span>{exportOptions.quality}%</span><input type="range" min="50" max="100" value={exportOptions.quality} disabled={!['jpeg', 'webp'].includes(exportOptions.format)} aria-label="导出质量" title="双击恢复导出质量 92%" onChange={(event) => setExportOptions({ ...exportOptions, quality: Number(event.target.value) })} onDoubleClick={(event) => { event.preventDefault(); setExportOptions({ ...exportOptions, quality: 92 }); }} /></label>
               </div>
+              {preparedExport && (
+                <div className="prepared-export" role="status" data-testid="prepared-export">
+                  <div>
+                    <CircleCheck size={18} />
+                    <span>
+                      <strong>成片已经生成</strong>
+                      <small>{preparedExport.name} · {Math.max(1, Math.round(preparedExport.blob.size / 1024))} KB</small>
+                    </span>
+                  </div>
+                  <button type="button" className="primary-button" onClick={savePreparedExport}>
+                    <DownloadSimple size={16} weight="bold" />
+                    {IS_MOBILE ? "保存或分享" : "保存已生成文件"}
+                  </button>
+                </div>
+              )}
             </div>
             <div className="preset-export">
               <div>
@@ -4889,7 +4976,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
               </div>
             </div>
             <div className="dialog-actions">
-              <GlassButton disabled={isExporting} onClick={() => setExportDialogOpen(false)}>取消</GlassButton>
+              <GlassButton disabled={isExporting} onClick={() => setExportDialogOpen(false)}>{preparedExport ? "完成" : "取消"}</GlassButton>
               <button className="primary-button" disabled={isExporting} onClick={exportImage}>
                 {isExporting
                   ? `正在导出 ${selectedTargets.length} 张…`
