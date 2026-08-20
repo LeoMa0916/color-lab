@@ -26,6 +26,7 @@
     "verify:regression": "node scripts/verify-camera-regression.mjs",
     "verify:semantic": "node scripts/verify-semantic.mjs",
     "verify:texture": "node scripts/verify-texture.mjs",
+    "verify:xmp": "node scripts/verify-xmp-preset.mjs",
     "verify:bundle": "node scripts/verify-bundle.mjs",
     "verify:all": "node scripts/verify-all.mjs"
   },

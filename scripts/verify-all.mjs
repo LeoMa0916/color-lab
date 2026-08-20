@@ -10,6 +10,7 @@ const scripts = [
   "verify:color-management",
   "verify:lut",
   "verify:texture",
+  "verify:xmp",
   "verify:color",
   "verify:v5",
   "verify:basic",
