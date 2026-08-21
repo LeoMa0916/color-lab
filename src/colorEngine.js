@@ -959,7 +959,7 @@ function buildSemanticLookups(source, reference) {
     && reference.semantic.model === "mediapipe-local";
   return SEMANTIC_PRIORITY.flatMap((id) => {
     if (
-      ["skin", "person", "hair", "clothing"].includes(id)
+      ["person", "hair", "clothing"].includes(id)
       && !reliablePortraitMasks
     ) return [];
     const sourceRegion = sourceRegions[id];
@@ -975,13 +975,28 @@ function buildSemanticLookups(source, reference) {
       0.065,
       Math.min(sourceRegion.coverage, referenceRegion.coverage),
     );
+    const sourceRegionQuality = Math.max(
+      0.35,
+      Math.min(
+        1,
+        (sourceRegion.confidence ?? source.semantic.confidence ?? 0.5)
+          / Math.max(0.0015, sourceRegion.coverage),
+      ),
+    );
+    const referenceRegionQuality = Math.max(
+      0.35,
+      Math.min(
+        1,
+        (referenceRegion.confidence ?? reference.semantic.confidence ?? 0.5)
+          / Math.max(0.0015, referenceRegion.coverage),
+      ),
+    );
+    const modelReliability = id === "skin" && !reliablePortraitMasks ? 0.64 : 1;
     return [{
       id,
       confidence: evidence
-        * Math.min(
-          sourceRegion.confidence ?? 0.7,
-          referenceRegion.confidence ?? 0.7,
-        ),
+        * Math.min(sourceRegionQuality, referenceRegionQuality)
+        * modelReliability,
       lookups: buildVersion3Lookups(sourceRegion.profile, referenceRegion.profile),
       toneLut: createToneLutV3(sourceRegion.profile, referenceRegion.profile, 1),
     }];
@@ -1281,7 +1296,11 @@ export function applyStyleProfile(
       );
       if (semantic) {
         const lookup = semantic.lookups;
-        const factor = semantic.maskWeight * semantic.confidence * strength * 0.64;
+        const regionalStrength = semantic.id === "skin" ? 0.9 : 0.64;
+        const factor = semantic.maskWeight
+          * semantic.confidence
+          * strength
+          * regionalStrength;
         const semanticTone = semantic.toneLut[Math.round(originalLightness * 1023)];
         const semanticToneIndex = Math.min(
           lookup.toneBins - 1,

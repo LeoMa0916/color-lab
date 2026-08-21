@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { analyzePixels, applyStyleProfile } from "../src/colorEngine.js";
 import { createHeuristicSemanticMasks } from "../src/semanticEngine.js";
+import { applyStyleLuts } from "../src/lut3d.js";
+import { buildStyleLuts } from "../src/styleLutEngine.js";
 
 const width = 80;
 const height = 48;
@@ -63,7 +65,83 @@ for (let index = 0; index < output.length; index += 4) {
 assert.ok(maximumRoundTripError <= 3, "matching a profile to itself must stay near identity");
 assert.equal(emptyProfile.semantic, undefined, "V3 fallback remains available without semantic masks");
 
+function makeGreenPortrait(skin, foliage) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = (y * width + x) * 4;
+      const isFace = x >= 27 && x < 55 && y >= 8 && y < 42;
+      const color = isFace ? skin : foliage;
+      data[index] = color[0];
+      data[index + 1] = color[1];
+      data[index + 2] = color[2];
+      data[index + 3] = 255;
+    }
+  }
+  const semantic = {
+    version: 1,
+    width,
+    height,
+    model: "heuristic",
+    confidence: 0.58,
+    masks: createHeuristicSemanticMasks(data, width, height),
+  };
+  semantic.regions = {
+    skin: { label: "肤色", confidence: 0.58 },
+    foliage: { label: "植物", confidence: 0.58 },
+  };
+  return { data, semantic };
+}
+
+const greenTarget = makeGreenPortrait([178, 157, 143], [38, 77, 43]);
+const greenReference = makeGreenPortrait([226, 169, 145], [21, 60, 36]);
+const greenTargetProfile = analyzePixels(greenTarget.data, {
+  width,
+  height,
+  semanticMasks: greenTarget.semantic,
+});
+const greenReferenceProfile = analyzePixels(greenReference.data, {
+  width,
+  height,
+  semanticMasks: greenReference.semantic,
+});
+const greenSettings = {
+  strength: 100,
+  referenceLighting: 35,
+  temperature: 0,
+  contrast: 0,
+  saturation: 0,
+  grain: 0,
+};
+const greenLuts = buildStyleLuts(
+  greenTargetProfile,
+  greenReferenceProfile,
+  greenSettings,
+);
+const greenOutput = new Uint8ClampedArray(greenTarget.data);
+applyStyleLuts(greenOutput, width, height, greenLuts, greenTarget.semantic);
+const skinIndex = (20 * width + 40) * 4;
+const beforeSkin = Array.from(greenTarget.data.slice(skinIndex, skinIndex + 3));
+const afterSkin = Array.from(greenOutput.slice(skinIndex, skinIndex + 3));
+const referenceSkin = [226, 169, 145];
+const distance = (left, right) => Math.hypot(
+  left[0] - right[0],
+  left[1] - right[1],
+  left[2] - right[2],
+);
+const chroma = (rgb) => Math.max(...rgb) - Math.min(...rgb);
+assert.ok(
+  distance(afterSkin, referenceSkin) < distance(beforeSkin, referenceSkin) * 0.82,
+  "heuristic fallback must still move skin toward the reference",
+);
+assert.ok(
+  chroma(afterSkin) >= chroma(beforeSkin) * 0.9,
+  "green-heavy scenes must not collapse skin into gray-cyan",
+);
+
 console.log("Semantic region verification passed", {
   skinCoverage: Number(profile.semantic.regions.skin.coverage.toFixed(3)),
   maximumRoundTripError,
+  greenSkinBefore: beforeSkin,
+  greenSkinAfter: afterSkin,
 });

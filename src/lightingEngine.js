@@ -69,9 +69,12 @@ function finishCell(cell, fallback) {
 export function analyzeSceneLighting(data, width, height, semanticMasks = null) {
   if (!width || !height || data.length < width * height * 4) return null;
   const neutralMask = semanticMasks?.masks?.neutral;
+  const skinMask = semanticMasks?.masks?.skin;
+  const personMask = semanticMasks?.masks?.person;
+  const foliageMask = semanticMasks?.masks?.foliage;
   const neutralSamples = [];
   const highlightSamples = [];
-  const channelTotals = [0, 0, 0];
+  const whitePointSamples = [[], [], []];
   let neutralWeightTotal = 0;
   const gridCells = Array.from({ length: GRID_SIZE * GRID_SIZE }, makeCell);
   const pixelCount = width * height;
@@ -88,14 +91,32 @@ export function analyzeSceneLighting(data, width, height, semanticMasks = null) 
     if (light > 0.82) highlightSamples.push(light);
     const inferredNeutral = clamp(1 - chroma / 0.14, 0, 1);
     const maskWeight = neutralMask?.[pixel] ?? 0;
+    // Pale skin and foliage under a veil or mixed light can be low-saturation.
+    // Treating those pixels as illuminant evidence writes the scene colour into
+    // the global white balance, which is especially destructive for portraits.
+    const greenBias = green > red * 1.025 && green > blue * 1.02
+      ? clamp((green / Math.max(1, red, blue) - 1) / 0.18, 0, 1)
+      : 0;
+    const semanticExclusion = Math.max(
+      (skinMask?.[pixel] ?? 0) * 0.96,
+      (personMask?.[pixel] ?? 0) * 0.68,
+      (foliageMask?.[pixel] ?? 0) * 0.92,
+      greenBias * 0.78,
+    );
     const neutralWeight = Math.max(maskWeight, inferredNeutral * 0.72)
+      * (1 - semanticExclusion)
       * (light > 0.04 && light < 0.97 ? 1 : 0);
     if (neutralWeight <= 0.02) continue;
 
     neutralSamples.push(light);
-    channelTotals[0] += red * neutralWeight;
-    channelTotals[1] += green * neutralWeight;
-    channelTotals[2] += blue * neutralWeight;
+    const normalized = normalizeWhitePoint([red, green, blue]);
+    // A robust median keeps a few bright coloured reflections from dominating
+    // the scene white point while retaining genuine neutral surfaces.
+    if (neutralWeight >= 0.08) {
+      whitePointSamples[0].push(normalized[0]);
+      whitePointSamples[1].push(normalized[1]);
+      whitePointSamples[2].push(normalized[2]);
+    }
     neutralWeightTotal += neutralWeight;
 
     const x = pixel % width;
@@ -111,8 +132,8 @@ export function analyzeSceneLighting(data, width, height, semanticMasks = null) 
   }
 
   const neutralMedian = median(neutralSamples, 0.5);
-  const whitePoint = neutralWeightTotal > 0.01
-    ? normalizeWhitePoint(channelTotals.map((value) => value / neutralWeightTotal))
+  const whitePoint = neutralWeightTotal > 0.01 && whitePointSamples[0].length
+    ? normalizeWhitePoint(whitePointSamples.map((values) => median(values, 1)))
     : [1, 1, 1];
   const exposureEV = clamp(Math.log2(Math.max(0.035, neutralMedian) / 0.5), -2.5, 2.5);
   const highlightPoint = median(highlightSamples, 0.92);

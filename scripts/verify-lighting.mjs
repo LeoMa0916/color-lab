@@ -127,6 +127,28 @@ assert.ok(
   "low confidence scenes must never create extreme color temperature",
 );
 
+const portraitScene = new Uint8ClampedArray(width * height * 4);
+const portraitNeutral = new Float32Array(width * height);
+const portraitSkin = new Float32Array(width * height);
+for (let pixel = 0; pixel < width * height; pixel += 1) {
+  const index = pixel * 4;
+  const neutralPatch = pixel % width < 8;
+  const color = neutralPatch ? [132, 132, 132] : [181, 163, 151];
+  portraitScene[index] = color[0];
+  portraitScene[index + 1] = color[1];
+  portraitScene[index + 2] = color[2];
+  portraitScene[index + 3] = 255;
+  portraitNeutral[pixel] = 1;
+  portraitSkin[pixel] = neutralPatch ? 0 : 1;
+}
+const portraitLight = analyzeSceneLighting(portraitScene, width, height, {
+  masks: { neutral: portraitNeutral, skin: portraitSkin },
+});
+assert.ok(
+  portraitLight.whitePoint.every((channel) => Math.abs(channel - 1) < 0.025),
+  "pale skin must not contaminate the scene white point",
+);
+
 console.log("Lighting separation verification passed", {
   warmTemperature: Math.round(warmProfile.lighting.temperature),
   coolTemperature: Math.round(coolProfile.lighting.temperature),

@@ -3,14 +3,14 @@ function clampUnit(value) {
 }
 
 const REGIONAL_RESIDUAL_LIMITS = {
-  skin: 0.065,
+  skin: 0.09,
   sky: 0.11,
   foliage: 0.1,
   neutral: 0.055,
 };
 
 const REGIONAL_OPACITY = {
-  skin: 0.58,
+  skin: 0.82,
   sky: 0.72,
   foliage: 0.7,
   neutral: 0.52,
@@ -23,6 +23,33 @@ function luminance(red, green, blue) {
 function smoothstep(start, end, value) {
   const amount = clampUnit((value - start) / Math.max(0.00001, end - start));
   return amount * amount * (3 - 2 * amount);
+}
+
+function protectSkinChroma(red, green, blue, mapped, skinWeight) {
+  if (skinWeight < 0.05) return mapped;
+  const inputLight = luminance(red, green, blue);
+  const mappedLight = luminance(mapped[0], mapped[1], mapped[2]);
+  const inputChroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+  const mappedChroma = Math.max(mapped[0], mapped[1], mapped[2])
+    - Math.min(mapped[0], mapped[1], mapped[2]);
+  const highlightWeight = smoothstep(0.48, 0.9, inputLight);
+  const minimumChroma = inputChroma * (0.62 + highlightWeight * 0.14);
+  if (inputChroma < 0.018 || mappedChroma >= minimumChroma) return mapped;
+  const collapse = clampUnit(
+    (minimumChroma - mappedChroma) / Math.max(0.001, minimumChroma),
+  );
+  const scale = minimumChroma / Math.max(0.001, inputChroma);
+  const blend = clampUnit(skinWeight) * collapse * 0.88;
+  mapped[0] = clampUnit(mapped[0] + (
+    mappedLight + (red - inputLight) * scale - mapped[0]
+  ) * blend);
+  mapped[1] = clampUnit(mapped[1] + (
+    mappedLight + (green - inputLight) * scale - mapped[1]
+  ) * blend);
+  mapped[2] = clampUnit(mapped[2] + (
+    mappedLight + (blue - inputLight) * scale - mapped[2]
+  ) * blend);
+  return mapped;
 }
 
 function protectToneRange(red, green, blue, mapped) {
@@ -359,6 +386,13 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
     const green = data[index + 1] / 255;
     const blue = data[index + 2] / 255;
     tetrahedralSampleInto(styleLuts.global, red, green, blue, mapped);
+    const skinWeight = clampUnit(maskValue(
+      semanticMasks,
+      "skin",
+      pixel,
+      width,
+      height,
+    ));
     if (hasToneCorrection) {
       // The neutral-axis correction is measured from a grayscale ramp. Keep it
       // authoritative for neutrals, but let the A/B and C/L color planes drive
@@ -375,6 +409,7 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
       mapped[2] = clampUnit(mapped[2] + toneCorrection);
     }
     if (!hasResiduals) {
+      protectSkinChroma(red, green, blue, mapped, skinWeight);
       const protectedColor = hasToneGuard
         ? protectToneRangeAdaptive(red, green, blue, mapped, toneGuard)
         : protectToneRange(red, green, blue, mapped);
@@ -403,6 +438,7 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
     delta[0] = mapped[0] + residual[0] * normalization;
     delta[1] = mapped[1] + residual[1] * normalization;
     delta[2] = mapped[2] + residual[2] * normalization;
+    protectSkinChroma(red, green, blue, delta, skinWeight);
     const protectedColor = hasToneGuard
       ? protectToneRangeAdaptive(red, green, blue, delta, toneGuard)
       : protectToneRange(red, green, blue, delta);

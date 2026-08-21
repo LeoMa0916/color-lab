@@ -148,7 +148,7 @@ export function createHeuristicSemanticMasks(data, width, height, categoryMask =
     masks.skin[pixel] = semanticSkin
       ? 1
       : !categoryMask && heuristicSkin
-        ? 0.58
+        ? 0.72
         : 0;
     masks.person[pixel] = category >= 1 && category <= 5
       ? 1
