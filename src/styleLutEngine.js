@@ -39,6 +39,27 @@ function buildToneGuard(source, reference) {
   };
 }
 
+function buildSkinColorTarget(source, reference, settings) {
+  const sourceMean = source?.semantic?.regions?.skin?.profile?.mean;
+  const referenceMean = reference?.semantic?.regions?.skin?.profile?.mean;
+  if (!sourceMean?.length || !referenceMean?.length) return null;
+  const normalizedSource = sourceMean.slice(0, 3).map((value) => value / 255);
+  const normalizedReference = referenceMean.slice(0, 3).map((value) => value / 255);
+  const sourceLight = normalizedSource[0] * 0.2126
+    + normalizedSource[1] * 0.7152
+    + normalizedSource[2] * 0.0722;
+  const referenceLight = normalizedReference[0] * 0.2126
+    + normalizedReference[1] * 0.7152
+    + normalizedReference[2] * 0.0722;
+  return {
+    sourceLight,
+    referenceLight,
+    sourceChroma: Math.max(...normalizedSource) - Math.min(...normalizedSource),
+    referenceOffsets: normalizedReference.map((value) => value - referenceLight),
+    strength: Math.max(0, Math.min(1, (settings?.strength ?? 100) / 100)),
+  };
+}
+
 function buildToneCorrection(globalLut, source, reference, settings) {
   const data = new Uint8ClampedArray(256 * 4);
   for (let value = 0; value < 256; value += 1) {
@@ -211,6 +232,7 @@ export function buildStyleLuts(
     version: 5,
     global,
     residuals,
+    skinColorTarget: buildSkinColorTarget(source, reference, settings),
     toneGuard: buildToneGuard(source, reference),
     toneCorrection: buildToneCorrection(global, source, reference, settings),
     localRegions: Object.keys(residuals),

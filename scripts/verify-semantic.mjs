@@ -130,13 +130,18 @@ const distance = (left, right) => Math.hypot(
   left[2] - right[2],
 );
 const chroma = (rgb) => Math.max(...rgb) - Math.min(...rgb);
+console.log("Portrait skin regression", { beforeSkin, afterSkin, referenceSkin });
 assert.ok(
-  distance(afterSkin, referenceSkin) < distance(beforeSkin, referenceSkin) * 0.82,
+  distance(afterSkin, referenceSkin) < distance(beforeSkin, referenceSkin) * 0.44,
   "heuristic fallback must still move skin toward the reference",
 );
 assert.ok(
-  chroma(afterSkin) >= chroma(beforeSkin) * 0.9,
+  chroma(afterSkin) >= chroma(referenceSkin) * 0.8,
   "green-heavy scenes must not collapse skin into gray-cyan",
+);
+assert.ok(
+  afterSkin[2] <= referenceSkin[2] + 12,
+  "skin matching must suppress excess blue instead of leaving a gray cast",
 );
 
 console.log("Semantic region verification passed", {

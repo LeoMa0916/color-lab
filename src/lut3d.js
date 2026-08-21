@@ -3,14 +3,17 @@ function clampUnit(value) {
 }
 
 const REGIONAL_RESIDUAL_LIMITS = {
-  skin: 0.09,
+  // Portrait references often encode substantially more red/yellow separation
+  // than the scene's global look.  Give the skin LUT enough range to restore
+  // that chroma without asking the global LUT to tint neutral objects.
+  skin: 0.135,
   sky: 0.11,
   foliage: 0.1,
   neutral: 0.055,
 };
 
 const REGIONAL_OPACITY = {
-  skin: 0.82,
+  skin: 0.96,
   sky: 0.72,
   foliage: 0.7,
   neutral: 0.52,
@@ -49,6 +52,24 @@ function protectSkinChroma(red, green, blue, mapped, skinWeight) {
   mapped[2] = clampUnit(mapped[2] + (
     mappedLight + (blue - inputLight) * scale - mapped[2]
   ) * blend);
+  return mapped;
+}
+
+function matchSkinColorTarget(red, green, blue, mapped, skinWeight, target) {
+  if (skinWeight < 0.05 || !target?.referenceOffsets?.length) return mapped;
+  const inputChroma = Math.max(red, green, blue) - Math.min(red, green, blue);
+  const sourceChroma = Math.max(0.012, target.sourceChroma || inputChroma);
+  const detailScale = Math.max(0.58, Math.min(1.5, inputChroma / sourceChroma));
+  const inputLight = luminance(red, green, blue);
+  const mappedLight = luminance(mapped[0], mapped[1], mapped[2]);
+  const blend = clampUnit(skinWeight) * clampUnit(target.strength ?? 1) * 0.82;
+  const referenceLight = inputLight
+    + ((target.referenceLight ?? inputLight) - (target.sourceLight ?? inputLight));
+  const desiredLight = referenceLight;
+  for (let channel = 0; channel < 3; channel += 1) {
+    const desired = desiredLight + target.referenceOffsets[channel] * detailScale * 1.12;
+    mapped[channel] = clampUnit(mapped[channel] + (desired - mapped[channel]) * blend);
+  }
   return mapped;
 }
 
@@ -369,6 +390,7 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
   const toneCorrectionLut = styleLuts.toneCorrection;
   const hasToneCorrection = Boolean(toneCorrectionLut?.length);
   const toneGuard = styleLuts.toneGuard;
+  const skinColorTarget = styleLuts.skinColorTarget;
   const hasToneGuard = Boolean(
     toneGuard
     && (toneGuard.toeLift || toneGuard.shoulderDrop || toneGuard.rangeCompression),
@@ -378,6 +400,7 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
     && !hasResiduals
     && !hasToneCorrection
     && !hasToneGuard
+    && !skinColorTarget
   ) return data;
   for (let pixel = 0; pixel < width * height; pixel += 1) {
     const index = pixel * 4;
@@ -409,6 +432,7 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
       mapped[2] = clampUnit(mapped[2] + toneCorrection);
     }
     if (!hasResiduals) {
+      matchSkinColorTarget(red, green, blue, mapped, skinWeight, skinColorTarget);
       protectSkinChroma(red, green, blue, mapped, skinWeight);
       const protectedColor = hasToneGuard
         ? protectToneRangeAdaptive(red, green, blue, mapped, toneGuard)
@@ -438,6 +462,7 @@ export function applyStyleLuts(data, width, height, styleLuts, semanticMasks = n
     delta[0] = mapped[0] + residual[0] * normalization;
     delta[1] = mapped[1] + residual[1] * normalization;
     delta[2] = mapped[2] + residual[2] * normalization;
+    matchSkinColorTarget(red, green, blue, delta, skinWeight, skinColorTarget);
     protectSkinChroma(red, green, blue, delta, skinWeight);
     const protectedColor = hasToneGuard
       ? protectToneRangeAdaptive(red, green, blue, delta, toneGuard)

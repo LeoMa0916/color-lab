@@ -1296,7 +1296,8 @@ export function applyStyleProfile(
       );
       if (semantic) {
         const lookup = semantic.lookups;
-        const regionalStrength = semantic.id === "skin" ? 0.9 : 0.64;
+        const isSkin = semantic.id === "skin";
+        const regionalStrength = isSkin ? 1 : 0.64;
         const factor = semantic.maskWeight
           * semantic.confidence
           * strength
@@ -1318,7 +1319,7 @@ export function applyStyleProfile(
         chroma = Math.hypot(a, b);
         hue = (Math.atan2(b, a) * 180 / Math.PI + 360) % 360;
         const semanticLookupHue = hue;
-        const hueLimit = semantic.id === "skin" ? 10 : 18;
+        const hueLimit = isSkin ? 14 : 18;
         const hueShift = Math.max(
           -hueLimit,
           Math.min(
@@ -1336,7 +1337,7 @@ export function applyStyleProfile(
         const logChroma = Math.max(
           Math.log(0.72),
           Math.min(
-            Math.log(1.38),
+            Math.log(isSkin ? 1.62 : 1.38),
             sampleHueLookup(lookup.abLogChroma, semanticLookupHue, lookup.hueBins)
               + sampleToneHueLookup(
                 lookup.logChroma,
@@ -1355,7 +1356,7 @@ export function applyStyleProfile(
           semanticLookupHue,
           lookup.toneBins,
           lookup.hueBins,
-        ) * factor * 0.16;
+        ) * factor * (isSkin ? 0.24 : 0.16);
         a = Math.cos(hue * Math.PI / 180) * Math.min(0.36, chroma);
         b = Math.sin(hue * Math.PI / 180) * Math.min(0.36, chroma);
       }
