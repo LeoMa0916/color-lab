@@ -238,7 +238,13 @@ try {
     cdp,
     "document.readyState === 'complete' && document.querySelector('.landing-login-button')",
   );
-  await evaluate(cdp, "document.querySelector('.landing-login-button').click()");
+  await evaluate(cdp, `window.__downloadFetch = window.fetch; window.fetch = (url, options) => String(url).includes('/releases/latest') ? Promise.resolve(new Response(JSON.stringify({ assets: [{ name: 'Color-Lab-Android.apk', browser_download_url: 'https://github.com/LeoMa0916/color-lab/releases/download/test/Color-Lab-Android.apk' }, { name: 'Color-Lab-Windows-Setup.exe', browser_download_url: 'https://github.com/LeoMa0916/color-lab/releases/download/test/Color-Lab-Windows-Setup.exe' }] }), { status: 200 })) : window.__downloadFetch(url, options); document.querySelector('.app-download-trigger').click()`);
+  await waitFor(cdp, "document.querySelectorAll('.app-download-row a').length === 2");
+  assert(await evaluate(cdp, "document.activeElement.classList.contains('app-download-close')"), "Download dialog did not receive focus");
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await waitFor(cdp, "!document.querySelector('.app-download-panel')");
+  assert(await evaluate(cdp, "document.activeElement.classList.contains('app-download-trigger')"), "Download dialog did not restore focus");
+  await evaluate(cdp, "window.fetch = window.__downloadFetch; document.querySelector('.landing-login-button').click()");
   await waitFor(cdp, "document.querySelector('[data-testid=\"auth-register-tab\"]')");
   await evaluate(cdp, "document.querySelector('.legal-consent-row button').click()");
   await waitFor(cdp, "document.querySelector('.legal-dialog .legal-document')");
@@ -957,6 +963,36 @@ try {
     Buffer.from(mobileShot.data, "base64"),
   );
 
+  for (let tool = 0; tool < 5; tool += 1) {
+    await evaluate(cdp, `document.querySelectorAll('.mobile-tool-nav button')[${tool}].click()`);
+    await delay(150);
+    const layout = await evaluate(cdp, `(() => {
+      const stage = document.querySelector('.photo-stage').getBoundingClientRect();
+      const panel = document.querySelector('.app-shell').dataset.mobilePanel;
+      const sheet = document.querySelector(panel === 'reference' ? '.left-panel' : '.right-panel');
+      return { stageHeight: stage.height, sheetHeight: sheet.getBoundingClientRect().height, bottom: sheet.getBoundingClientRect().bottom, navTop: document.querySelector('.mobile-editor-controls').getBoundingClientRect().top, overflow: document.documentElement.scrollWidth > innerWidth, canvasWidthDelta: Math.abs(document.querySelector('.photo-canvas.original').getBoundingClientRect().width - document.querySelector('.photo-canvas.styled').getBoundingClientRect().width) };
+    })()`);
+    assert(layout.stageHeight >= 100 && layout.sheetHeight > 0, "Mobile tool hid the photo or its controls");
+    console.log("Mobile tool layout", tool, layout);
+    const toolShot = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+    writeFileSync(join(project, "qa-private", `mobile-tool-${tool}.png`), Buffer.from(toolShot.data, "base64"));
+    assert(layout.bottom <= layout.navTop + 2, "Mobile tool is covered by the bottom navigation");
+    assert(!layout.overflow, "Mobile tool causes horizontal overflow");
+    assert(layout.canvasWidthDelta < 1, "Before/after canvases are not registered at the same size");
+    if (tool === 1) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      writeFileSync(join(project, "qa-private", "mobile-adjustments.png"), Buffer.from(shot.data, "base64"));
+    }
+  }
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 375, height: 667, deviceScaleFactor: 1, mobile: true });
+  await evaluate(cdp, "document.documentElement.style.fontSize = '24px'; document.querySelectorAll('.mobile-tool-nav button')[1].click()");
+  await delay(150);
+  const compact = await evaluate(cdp, `({overflow: document.documentElement.scrollWidth > innerWidth, stage: document.querySelector('.photo-stage').getBoundingClientRect().height, sheetBottom: document.querySelector('.right-panel').getBoundingClientRect().bottom, navTop: document.querySelector('.mobile-editor-controls').getBoundingClientRect().top})`);
+  assert(!compact.overflow && compact.stage >= 100 && compact.sheetBottom <= compact.navTop + 2, "375px large-font layout is obstructed");
+  console.log("375px large-font layout passed", compact);
+  await evaluate(cdp, "document.documentElement.style.fontSize = ''; document.querySelector('.mobile-tool-heading button').click()");
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+
   await evaluate(cdp, "document.querySelector('.stage-expand-button').click()");
   await waitFor(cdp, "document.querySelector('.stage-preview-modal')");
   await evaluate(cdp, "document.querySelector('.stage-preview-zoom button:last-child').click()");
@@ -1000,6 +1036,7 @@ try {
   })`);
   assert(landscape.scrollWidth === landscape.width, "Landscape layout overflows horizontally");
   assert(landscape.workspaceHeight > 0, "Landscape workspace is not visible");
+  assert(landscape.workspaceHeight <= 390, "Landscape editor became a scrolling desktop page");
 
   await cdp.send("Emulation.setEmulatedMedia", {
     features: [{ name: "prefers-reduced-motion", value: "reduce" }],

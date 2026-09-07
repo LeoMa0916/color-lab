@@ -8,10 +8,42 @@ import {
   residualLut,
   smoothLut,
   tetrahedralSample,
+  matchSkinColorTarget,
 } from "../src/lut3d.js";
-import { deserializeClstyle, serializeClstyle } from "../src/styleStore.js";
+import { deserializeClstyle, serializeClstyle, saveStyle } from "../src/styleStore.js";
 
 const identity = createIdentityLut(33);
+const previousIndexedDB = globalThis.indexedDB;
+let databaseClosed = false;
+globalThis.indexedDB = { open() {
+  const request = {};
+  queueMicrotask(() => {
+    request.result = { close() { databaseClosed = true; }, transaction() {
+      const operation = { result: "style-id" };
+      const transaction = { objectStore() { return { put() { return operation; } }; }, error: new Error("Quota abort") };
+      queueMicrotask(() => { operation.onsuccess?.(); queueMicrotask(() => transaction.onabort()); });
+      return transaction;
+    } };
+    request.onsuccess();
+  });
+  return request;
+} };
+await assert.rejects(saveStyle({ id: "aborted-style" }), /Quota abort/, "Aborted style write was reported as saved");
+assert.ok(databaseClosed, "Aborted transaction leaked database connection");
+if (previousIndexedDB === undefined) delete globalThis.indexedDB;
+else globalThis.indexedDB = previousIndexedDB;
+// Near-white skin must keep the reference hue instead of clipping red alone.
+const skinMean = [0.85, 0.62, 0.51];
+const skinLight = skinMean[0] * .2126 + skinMean[1] * .7152 + skinMean[2] * .0722;
+const skinTarget = { sourceLight: .4, referenceLight: .8, sourceChroma: .2, referenceOffsets: skinMean.map((value) => value - skinLight), strength: 1 };
+for (const light of [.01, .2, .5, .85, .99]) {
+  const result = matchSkinColorTarget(light, light, light, [light, light, light], 1, skinTarget);
+  assert.ok(result.every((value) => Number.isFinite(value) && value >= 0 && value <= 1));
+  const hueRatio = (result[0] - result[1]) / (result[1] - result[2]);
+  assert.ok(Math.abs(hueRatio - (skinMean[0] - skinMean[1]) / (skinMean[1] - skinMean[2])) < 1e-6, "Skin gamut mapping changed reference hue");
+}
+assert.deepEqual(matchSkinColorTarget(.7, .6, .5, [.3, .5, .2], 0, skinTarget), [.3, .5, .2], "Skin matching touched background");
+assert.deepEqual(matchSkinColorTarget(.7, .6, .5, [.3, .5, .2], 1, { ...skinTarget, strength: 0 }), [.3, .5, .2], "Zero strength changed pixels");
 let maximumIdentityError = 0;
 for (let index = 0; index < 200; index += 1) {
   const input = [

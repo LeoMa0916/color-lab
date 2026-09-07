@@ -35,7 +35,7 @@ import {
   UserRound,
   WandSparkles,
 } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   HUE_BANDS,
   analyzePixels,
@@ -1273,6 +1273,15 @@ const BASIC_GROUPS = [
   },
 ];
 
+const MobileToolContext = createContext(null);
+const MOBILE_TOOLS = [
+  { id: "reference", label: "参考", icon: Images },
+  { id: "adjust", label: "调整", icon: SlidersHorizontal },
+  { id: "color", label: "色彩", icon: Sparkle },
+  { id: "mask", label: "局部", icon: Brush },
+  { id: "geometry", label: "裁切", icon: Crop },
+];
+
 function InspectorDisclosure({
   title,
   meta = null,
@@ -1282,6 +1291,8 @@ function InspectorDisclosure({
   children,
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const mobileTool = useContext(MobileToolContext);
+  const expanded = mobileTool ? true : open;
   const id = useId().replaceAll(":", "");
   const panelId = `inspector-${id}`;
   return (
@@ -1290,17 +1301,17 @@ function InspectorDisclosure({
         <button
           type="button"
           className="inspector-disclosure-toggle"
-          aria-expanded={open}
+          aria-expanded={expanded}
           aria-controls={panelId}
           onClick={() => setOpen((value) => !value)}
         >
           <span>{title}</span>
           {meta && <small>{meta}</small>}
-          <CaretDown size={15} className={open ? "open" : ""} />
+          <CaretDown size={15} className={expanded ? "open" : ""} />
         </button>
         {action && <div className="inspector-disclosure-action">{action}</div>}
       </div>
-      {open && (
+      {expanded && (
         <div id={panelId} className="inspector-disclosure-body">
           {children}
         </div>
@@ -2087,6 +2098,20 @@ function GeometryPanel({
 }
 
 export function App({ onLogout, session, username = "本机用户" }) {
+  const [mobilePanel, setMobilePanel] = useState(null);
+  const [mobileViewport, setMobileViewport] = useState(() => window.matchMedia("(max-width: 900px)").matches);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 900px)");
+    const update = () => { setMobileViewport(media.matches); if (!media.matches) setMobilePanel(null); };
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    if (!mobilePanel) return;
+    const close = (event) => { if (event.key === "Escape") setMobilePanel(null); };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [mobilePanel]);
   const [references, setReferences] = useState([]);
   const [referenceStats, setReferenceStats] = useState(null);
   const [targets, setTargets] = useState([]);
@@ -4054,7 +4079,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
   }
 
   return (
-    <main className="app-shell editor-shell">
+    <main className="app-shell editor-shell" data-mobile-panel={mobilePanel || "none"}>
       <header className="topbar">
         <div className="brand"><SlidersHorizontal size={21} weight="bold" /><span>调色室</span><small>Color Engine 5.1</small></div>
         <div className="compare-toggle glass-surface"><span>之前</span><span className="active">之后</span></div>
@@ -4421,6 +4446,7 @@ export function App({ onLogout, session, username = "本机用户" }) {
           </section>
         </section>
 
+        <MobileToolContext.Provider value={mobileViewport ? mobilePanel : null}>
         <aside className="right-panel glass-panel">
           <InspectorDisclosure title="直方图" meta="RGB" className="histogram-section" defaultOpen>
             <HistogramCanvas histogram={displayHistogram || active?.stats?.histogram} />
@@ -4583,7 +4609,14 @@ export function App({ onLogout, session, username = "本机用户" }) {
             <p>{referenceStats ? `参考色彩 · ${referenceStats.saturation < 0.35 ? "克制饱和" : "鲜明色彩"} · 21 分区取色` : "上传参考图生成色板"}</p>
           </InspectorDisclosure>
         </aside>
+        </MobileToolContext.Provider>
       </section>
+      <div className="mobile-editor-controls">
+        {mobilePanel && <div className="mobile-tool-heading"><strong>{MOBILE_TOOLS.find((tool) => tool.id === mobilePanel)?.label}</strong><button type="button" onClick={() => { setMobilePanel(null); setEditingTool(null); }} aria-label="收起工具"><Check size={20} />完成</button></div>}
+        <nav className="mobile-tool-nav" aria-label="照片编辑工具">
+          {MOBILE_TOOLS.map(({ id, label, icon: Icon }) => <button key={id} type="button" aria-pressed={mobilePanel === id} onClick={() => { setEditingTool(null); setMobilePanel((current) => current === id ? null : id); }}><Icon size={22} /><span>{label}</span></button>)}
+        </nav>
+      </div>
       {!!importErrors.length && (
         <div className="import-errors glass-surface" role="alert">
           <strong>部分文件未导入</strong>

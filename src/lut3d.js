@@ -55,19 +55,26 @@ function protectSkinChroma(red, green, blue, mapped, skinWeight) {
   return mapped;
 }
 
-function matchSkinColorTarget(red, green, blue, mapped, skinWeight, target) {
+export function matchSkinColorTarget(red, green, blue, mapped, skinWeight, target) {
   if (skinWeight < 0.05 || !target?.referenceOffsets?.length) return mapped;
   const inputChroma = Math.max(red, green, blue) - Math.min(red, green, blue);
   const sourceChroma = Math.max(0.012, target.sourceChroma || inputChroma);
   const detailScale = Math.max(0.58, Math.min(1.5, inputChroma / sourceChroma));
   const inputLight = luminance(red, green, blue);
-  const mappedLight = luminance(mapped[0], mapped[1], mapped[2]);
   const blend = clampUnit(skinWeight) * clampUnit(target.strength ?? 1) * 0.82;
   const referenceLight = inputLight
     + ((target.referenceLight ?? inputLight) - (target.sourceLight ?? inputLight));
-  const desiredLight = referenceLight;
+  // Preserve the reference hue at the gamut boundary. Clipping each channel
+  // separately turns bright warm skin yellow/white and crushes shadow color.
+  const desiredLight = Math.max(0.005, Math.min(0.995, referenceLight));
+  let chromaScale = detailScale * 1.12;
   for (let channel = 0; channel < 3; channel += 1) {
-    const desired = desiredLight + target.referenceOffsets[channel] * detailScale * 1.12;
+    const offset = target.referenceOffsets[channel];
+    if (offset > 0) chromaScale = Math.min(chromaScale, (1 - desiredLight) / offset);
+    if (offset < 0) chromaScale = Math.min(chromaScale, -desiredLight / offset);
+  }
+  for (let channel = 0; channel < 3; channel += 1) {
+    const desired = desiredLight + target.referenceOffsets[channel] * chromaScale;
     mapped[channel] = clampUnit(mapped[channel] + (desired - mapped[channel]) * blend);
   }
   return mapped;

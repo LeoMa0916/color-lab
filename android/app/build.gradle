@@ -1,0 +1,27 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'top.colorslab.app'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'top.colorslab.app'
+        minSdk 23
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+    }
+    signingConfigs {
+        localRelease {
+            if (System.getenv('COLORLAB_KEYSTORE')) {
+                storeFile file(System.getenv('COLORLAB_KEYSTORE'))
+                storePassword System.getenv('COLORLAB_SIGN_PASSWORD')
+                keyAlias 'colorlab'
+                keyPassword System.getenv('COLORLAB_SIGN_PASSWORD')
+            }
+        }
+    }
+    buildTypes { release {
+        minifyEnabled false
+        if (System.getenv('COLORLAB_KEYSTORE')) signingConfig signingConfigs.localRelease
+    } }
+}
+dependencies { implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.6.2' }

@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "top.colorslab.app",
+      "sha256_cert_fingerprints": ["F9:24:5E:B6:57:8F:38:DE:3A:B4:4E:A7:05:A0:02:38:6A:CF:32:78:2D:CB:25:76:24:31:9A:B5:07:39:FC:DB"]
+    }
+  }
+]

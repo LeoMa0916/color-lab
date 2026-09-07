@@ -19,3 +19,9 @@ Thumbs.db
 
 # Private camera originals, hashes, local regression results, and QA captures
 qa-private/
+release/
+.native-tools/
+android/.gradle/
+android/local.properties
+android/**/build/
+*.keystore

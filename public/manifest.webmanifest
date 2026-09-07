@@ -1,0 +1,6 @@
+{
+  "id": "/", "name": "调色室 · Color Lab", "short_name": "调色室",
+  "start_url": "/", "scope": "/", "display": "standalone",
+  "background_color": "#111722", "theme_color": "#111722",
+  "icons": [{"src":"/icon-192.png","sizes":"192x192","type":"image/png"},{"src":"/icon-512.png","sizes":"512x512","type":"image/png"}]
+}

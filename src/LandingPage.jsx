@@ -30,6 +30,7 @@ import {
   validateUsername,
 } from "./cloudClient";
 import "./landing.css";
+import { AppDownloads } from "./AppDownloads";
 
 const VIDEO_URL = "/media/color-lab-hero.mp4";
 
@@ -693,6 +694,7 @@ export function LandingPage({ onAuthenticated }) {
       <div className="landing-orb landing-orb-two" aria-hidden="true" />
 
       <nav className="landing-nav relative z-30 flex items-center justify-between px-6 py-5 md:px-12 lg:px-16" aria-label="主导航">
+        <AppDownloads />
         <div className="flex items-center gap-10">
           <button className="landing-brand text-lg font-semibold tracking-tight text-white sm:text-xl" type="button" onClick={() => navigate("home")}>
             <span className="brand-lens" aria-hidden="true" />

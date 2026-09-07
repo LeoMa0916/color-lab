@@ -101,9 +101,13 @@ async function transact(mode, action) {
     const transaction = database.transaction(STORE_NAME, mode);
     const store = transaction.objectStore(STORE_NAME);
     const request = action(store);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-    transaction.oncomplete = () => database.close();
+    // A successful put is not durable until its transaction commits. Quota
+    // errors and aborts can still occur after request.onsuccess.
+    transaction.oncomplete = () => { database.close(); resolve(request.result); };
+    const fail = () => { database.close(); reject(transaction.error || request.error || new Error("风格保存未完成，请重试")); };
+    transaction.onabort = fail;
+    transaction.onerror = fail;
+    request.onerror = fail;
   });
 }
 

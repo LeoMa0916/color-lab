@@ -42,7 +42,8 @@ function buildToneGuard(source, reference) {
 function buildSkinColorTarget(source, reference, settings) {
   const sourceMean = source?.semantic?.regions?.skin?.profile?.mean;
   const referenceMean = reference?.semantic?.regions?.skin?.profile?.mean;
-  if (!sourceMean?.length || !referenceMean?.length) return null;
+  if (sourceMean?.length < 3 || referenceMean?.length < 3 || !sourceMean || !referenceMean) return null;
+  if (![...sourceMean.slice(0, 3), ...referenceMean.slice(0, 3)].every(Number.isFinite)) return null;
   const normalizedSource = sourceMean.slice(0, 3).map((value) => value / 255);
   const normalizedReference = referenceMean.slice(0, 3).map((value) => value / 255);
   const sourceLight = normalizedSource[0] * 0.2126
