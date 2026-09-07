@@ -6,7 +6,7 @@
 - Fix before/after canvas registration at intermediate and mobile widths using the stage container size.
 - Skin target mapping preserves chroma direction at gamut boundaries, validates target statistics, and retains semantic gating.
 - IndexedDB saves succeed only after transaction commit; quota aborts reject instead of reporting false success.
-- Website download dialog has Escape, focus return and focus trapping. Links appear only for existing release assets.
+- Website download dialog has Escape, focus return and focus trapping. Links use a same-origin manifest populated after verifying published release assets. Live inspection caught GitHub anonymous API rate limiting, so the client no longer depends on that API.
 
 ## Verified 2026-09-07
 

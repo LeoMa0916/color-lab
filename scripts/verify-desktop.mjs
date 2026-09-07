@@ -32,5 +32,17 @@ try {
   const screenshot = await send('Page.captureScreenshot',{format:'png'});
   writeFileSync('qa-private/desktop-app.png',Buffer.from(screenshot.data,'base64'));
   console.log('Packaged Windows app launch verified',page);
+  await send('Runtime.evaluate',{expression:'document.querySelector(".app-download-trigger").click()'});
+  let downloads=[];
+  const downloadDeadline=Date.now()+15000;
+  do {
+    downloads=(await send('Runtime.evaluate',{expression:'Array.from(document.querySelectorAll(".app-download-row a"),a=>a.href)',returnByValue:true})).result?.value || [];
+    if(downloads.length===2) break;
+    await delay(300);
+  } while(Date.now()<downloadDeadline);
+  if(downloads.length!==2 || downloads.some(url=>!url.startsWith('https://github.com/LeoMa0916/color-lab/releases/download/'))) throw new Error('Production download dialog unavailable');
+  const downloadShot=await send('Page.captureScreenshot',{format:'png'});
+  writeFileSync('qa-private/desktop-downloads.png',Buffer.from(downloadShot.data,'base64'));
+  console.log('Production download dialog verified', downloads);
   await Promise.race([send('Browser.close').catch(()=>{}), delay(1000)]);
 } finally { socket?.close(); child.kill(); }

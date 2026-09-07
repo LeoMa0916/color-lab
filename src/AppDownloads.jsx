@@ -12,7 +12,7 @@ export function AppDownloads() {
     if (!open) return;
     const controller = new AbortController();
     setStatus("loading");
-    fetch("https://api.github.com/repos/LeoMa0916/color-lab/releases/latest", { signal: controller.signal })
+    fetch("/app-release.json", { signal: controller.signal, cache: "no-cache" })
       .then((response) => { if (!response.ok) throw new Error("Unavailable"); return response.json(); })
       .then((data) => { setRelease(data); setStatus("ready"); })
       .catch((error) => { if (error.name !== "AbortError") setStatus("error"); });

@@ -238,13 +238,13 @@ try {
     cdp,
     "document.readyState === 'complete' && document.querySelector('.landing-login-button')",
   );
-  await evaluate(cdp, `window.__downloadFetch = window.fetch; window.fetch = (url, options) => String(url).includes('/releases/latest') ? Promise.resolve(new Response(JSON.stringify({ assets: [{ name: 'Color-Lab-Android.apk', browser_download_url: 'https://github.com/LeoMa0916/color-lab/releases/download/test/Color-Lab-Android.apk' }, { name: 'Color-Lab-Windows-Setup.exe', browser_download_url: 'https://github.com/LeoMa0916/color-lab/releases/download/test/Color-Lab-Windows-Setup.exe' }] }), { status: 200 })) : window.__downloadFetch(url, options); document.querySelector('.app-download-trigger').click()`);
+  await evaluate(cdp, "document.querySelector('.app-download-trigger').click()");
   await waitFor(cdp, "document.querySelectorAll('.app-download-row a').length === 2");
   assert(await evaluate(cdp, "document.activeElement.classList.contains('app-download-close')"), "Download dialog did not receive focus");
   await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
   await waitFor(cdp, "!document.querySelector('.app-download-panel')");
   assert(await evaluate(cdp, "document.activeElement.classList.contains('app-download-trigger')"), "Download dialog did not restore focus");
-  await evaluate(cdp, "window.fetch = window.__downloadFetch; document.querySelector('.landing-login-button').click()");
+  await evaluate(cdp, "document.querySelector('.landing-login-button').click()");
   await waitFor(cdp, "document.querySelector('[data-testid=\"auth-register-tab\"]')");
   await evaluate(cdp, "document.querySelector('.legal-consent-row button').click()");
   await waitFor(cdp, "document.querySelector('.legal-dialog .legal-document')");

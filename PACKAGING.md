@@ -16,7 +16,7 @@ The website's `.well-known/assetlinks.json` must contain the release certificate
 
 ## Distribution
 
-Publish installer files as GitHub Release assets named exactly `Color-Lab-Android.apk` and `Color-Lab-Windows-Setup.exe`. The website queries the latest published release and enables each download only when the matching asset exists. Large installers are not placed in Cloudflare Pages static assets. The release workflow provides build artifacts for manual verification; it does not automatically publish untested installers.
+Publish installer files as GitHub Release assets named exactly `Color-Lab-Android.apk` and `Color-Lab-Windows-Setup.exe`. After verifying their public download URLs, update `public/app-release.json` with the version, URLs, sizes and SHA-256 hashes. The website reads this same-origin manifest, avoiding GitHub anonymous API rate limits. Large installers are not placed in Cloudflare Pages static assets. The release workflow provides build artifacts for manual verification; it does not automatically publish untested installers.
 
 ## Acceptance
 
