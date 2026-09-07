@@ -1,11 +1,11 @@
 {
-  "tag_name": "app-v0.1.0",
+  "tag_name": "app-v0.1.1",
   "assets": [
     {
       "name": "Color-Lab-Android.apk",
-      "size": 3676409,
-      "browser_download_url": "https://github.com/LeoMa0916/color-lab/releases/download/app-v0.1.0/Color-Lab-Android.apk",
-      "sha256": "1fe4aa9d54e8326027ff1588933444ac627ed5f3ad437ab1614a45714d127476"
+      "size": 3678538,
+      "browser_download_url": "https://github.com/LeoMa0916/color-lab/releases/download/app-v0.1.1/Color-Lab-Android.apk",
+      "sha256": "c98790494866619951acc8210884d4cd47f1558917990373e5571cfe7200096e"
     },
     {
       "name": "Color-Lab-Windows-Setup.exe",

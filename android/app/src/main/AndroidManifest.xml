@@ -2,12 +2,13 @@
   <uses-permission android:name="android.permission.INTERNET" />
   <application android:label="调色室" android:icon="@drawable/ic_launcher" android:theme="@android:style/Theme.Translucent.NoTitleBar" android:allowBackup="false" android:supportsRtl="true">
     <meta-data android:name="asset_statements" android:resource="@string/asset_statements" />
-    <activity android:name="com.google.androidbrowserhelper.trusted.LauncherActivity" android:exported="true">
+    <activity android:name=".StartupActivity" android:exported="true" android:theme="@android:style/Theme.Material.NoActionBar">
+      <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+    </activity>
+    <activity android:name="com.google.androidbrowserhelper.trusted.LauncherActivity" android:exported="false">
       <meta-data android:name="android.support.customtabs.trusted.DEFAULT_URL" android:value="https://colorslab.top" />
       <meta-data android:name="android.support.customtabs.trusted.STATUS_BAR_COLOR" android:resource="@color/background" />
       <meta-data android:name="android.support.customtabs.trusted.NAVIGATION_BAR_COLOR" android:resource="@color/background" />
-      <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
-      <intent-filter android:autoVerify="true"><action android:name="android.intent.action.VIEW" /><category android:name="android.intent.category.DEFAULT" /><category android:name="android.intent.category.BROWSABLE" /><data android:scheme="https" android:host="colorslab.top" /></intent-filter>
     </activity>
   </application>
 </manifest>
